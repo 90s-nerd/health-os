@@ -1,0 +1,23 @@
+services:
+  health-os:
+    build: .
+    container_name: health-os
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: ${TZ:-America/Chicago}
+      EMBEDDED_MODE: ${EMBEDDED_MODE:-false}
+      DATABASE_URL: sqlite:////data/health-os.db
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET in .env}
+      SESSION_SECURE: ${SESSION_SECURE:-false}
+      FRAME_ANCESTORS: ${FRAME_ANCESTORS:-}
+      INTEGRATION_ENABLED: ${INTEGRATION_ENABLED:-false}
+      INTEGRATION_BASE_URL: ${INTEGRATION_BASE_URL:-http://automation.local:8123}
+      INTEGRATION_TOKEN: ${INTEGRATION_TOKEN:-}
+      INTEGRATION_VERIFY_SSL: ${INTEGRATION_VERIFY_SSL:-false}
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - ${BACKUP_HOST_DIR:-./backups}:/backups
