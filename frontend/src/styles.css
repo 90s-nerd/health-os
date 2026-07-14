@@ -199,19 +199,25 @@ input:focus-visible {
 }
 .ring {
   --value: 0deg;
+  --ring-inset: 8px;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   width: 88px;
   height: 88px;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: conic-gradient(var(--green) var(--value), #dce3dd 0);
+  background: conic-gradient(
+    var(--green) 0deg var(--value),
+    #dce3dd var(--value) 360deg
+  );
   flex: 0 0 auto;
 }
 .ring:before {
   content: "";
   position: absolute;
-  width: 72px;
-  height: 72px;
+  inset: var(--ring-inset);
   border-radius: 50%;
   background: var(--card);
 }
@@ -1910,12 +1916,9 @@ input:focus-visible {
     font-size: 27px;
   }
   .ring {
+    --ring-inset: 7px;
     width: 76px;
     height: 76px;
-  }
-  .ring:before {
-    width: 62px;
-    height: 62px;
   }
   .status-row {
     gap: 8px;
