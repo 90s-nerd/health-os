@@ -1457,25 +1457,6 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
     }
   };
 
-  const disablePin = async () => {
-    if (!confirm("Disable standalone PIN access for this account?")) return;
-    setBusy(true);
-    try {
-      const result = await api<{ message: string }>("/auth/pin", {
-        method: "DELETE",
-      });
-      setPinMessage(result.message);
-      setPinConfigured(false);
-      await qc.invalidateQueries({ queryKey: ["settings"] });
-    } catch (error) {
-      setPinMessage(
-        error instanceof Error ? error.message : "Could not disable PIN access",
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const useTravelTimezone = async () => {
     const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await api("/timezone/travel", {
@@ -1766,68 +1747,57 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
         </div>
       </form>
 
-      <form className="form-section pin-form" onSubmit={changePin}>
-        <div className="form-heading">
-          <span className="eyebrow">Access protection</span>
-          <h3>{pinConfigured ? "Standalone PIN" : "Enable standalone PIN"}</h3>
-          {hasHomeAssistant && (
-            <p>
-              Sign-in method: Home Assistant
-              {initial.home_assistant_display_name
-                ? ` · ${initial.home_assistant_display_name}`
-                : ""}
-            </p>
-          )}
-          <p>The PIN is stored only as a secure Argon2 hash.</p>
-        </div>
-        <div className="field-grid">
-          {pinConfigured && (
+      {!hasHomeAssistant && (
+        <form className="form-section pin-form" onSubmit={changePin}>
+          <div className="form-heading">
+            <span className="eyebrow">Access protection</span>
+            <h3>{pinConfigured ? "Update PIN" : "Enable PIN"}</h3>
+            <p>The PIN is stored only as a secure Argon2 hash.</p>
+          </div>
+          <div className="field-grid">
+            {pinConfigured && (
+              <label>
+                Current PIN
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={currentPin}
+                  onChange={(event) => setCurrentPin(event.target.value)}
+                  required
+                />
+              </label>
+            )}
             <label>
-              Current PIN
+              New PIN
               <input
                 type="password"
                 inputMode="numeric"
-                value={currentPin}
-                onChange={(event) => setCurrentPin(event.target.value)}
+                minLength={4}
+                value={newPin}
+                onChange={(event) => setNewPin(event.target.value)}
                 required
               />
             </label>
-          )}
-          <label>
-            New PIN
-            <input
-              type="password"
-              inputMode="numeric"
-              minLength={4}
-              value={newPin}
-              onChange={(event) => setNewPin(event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            Confirm new PIN
-            <input
-              type="password"
-              inputMode="numeric"
-              minLength={4}
-              value={confirmPin}
-              onChange={(event) => setConfirmPin(event.target.value)}
-              required
-            />
-          </label>
-        </div>
-        <div className="save-row">
-          <button type="submit" disabled={busy || newPin.length < 4}>
-            {pinConfigured ? "Update PIN" : "Enable PIN"}
-          </button>
-          {pinConfigured && hasHomeAssistant && (
-            <button type="button" className="quiet-button" onClick={disablePin}>
-              Disable PIN
+            <label>
+              Confirm new PIN
+              <input
+                type="password"
+                inputMode="numeric"
+                minLength={4}
+                value={confirmPin}
+                onChange={(event) => setConfirmPin(event.target.value)}
+                required
+              />
+            </label>
+          </div>
+          <div className="save-row">
+            <button type="submit" disabled={busy || newPin.length < 4}>
+              {pinConfigured ? "Update PIN" : "Enable PIN"}
             </button>
-          )}
-          {pinMessage && <p role="status">{pinMessage}</p>}
-        </div>
-      </form>
+            {pinMessage && <p role="status">{pinMessage}</p>}
+          </div>
+        </form>
+      )}
 
       <section className="panel">
         <h3>Your data</h3>
@@ -2193,6 +2163,7 @@ export default function App() {
   const [creatingAccount, setCreatingAccount] = useState(false);
   const embedded =
     new URLSearchParams(location.search).get("embedded") === "true";
+  const homeAssistantSession = auth.data?.auth_provider === "home_assistant";
   const lockDashboard = () =>
     post("/auth/logout").then(() => location.reload());
   if (auth.isLoading) return <Loading />;
@@ -2254,10 +2225,12 @@ export default function App() {
         </nav>
         <div className="sidebar-footer">
           <blockquote>“A short walk still counts.”</blockquote>
-          <button className="sidebar-lock" onClick={lockDashboard}>
-            <LogOut size={18} />
-            <span>Lock dashboard</span>
-          </button>
+          {!homeAssistantSession && (
+            <button className="sidebar-lock" onClick={lockDashboard}>
+              <LogOut size={18} />
+              <span>Lock dashboard</span>
+            </button>
+          )}
         </div>
       </aside>
       <main className="content">{views[view]}</main>
@@ -2275,10 +2248,12 @@ export default function App() {
             <span>{label}</span>
           </button>
         ))}
-        <button className="mobile-lock" onClick={lockDashboard}>
-          <LogOut />
-          <span>Lock</span>
-        </button>
+        {!homeAssistantSession && (
+          <button className="mobile-lock" onClick={lockDashboard}>
+            <LogOut />
+            <span>Lock</span>
+          </button>
+        )}
       </nav>
     </div>
   );

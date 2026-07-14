@@ -86,11 +86,13 @@ const progress = {
 let taskState = "available";
 let onboardingRequired = false;
 let haSetupRequired = false;
+let haAuthenticated = false;
 beforeEach(() => {
   cleanup();
   taskState = "available";
   onboardingRequired = false;
   haSetupRequired = false;
+  haAuthenticated = false;
 });
 vi.stubGlobal(
   "fetch",
@@ -106,16 +108,47 @@ vi.stubGlobal(
               onboarding_required: onboardingRequired || haSetupRequired,
               pin_required: false,
               authenticated: !onboardingRequired,
-              auth_provider: haSetupRequired ? "home_assistant" : null,
-              profile: haSetupRequired
+              auth_provider:
+                haSetupRequired || haAuthenticated ? "home_assistant" : null,
+              profile: haSetupRequired || haAuthenticated
                 ? {
                     display_name: "Taylor",
-                    setup_required: true,
+                    setup_required: haSetupRequired,
                   }
                 : null,
             }
           : url.includes("/today")
             ? { ...today, tasks: [{ ...testTask, state: taskState }] }
+            : url.includes("/settings")
+              ? {
+                  display_name: "Taylor",
+                  starting_weight_kg: 99,
+                  timezone: "America/Chicago",
+                  caffeine_cutoff: "14:00",
+                  water_target_ml: 2000,
+                  weight_milestones: [94, 90, 85],
+                  notification_target: "",
+                  quiet_hours_start: "22:30",
+                  quiet_hours_end: "07:00",
+                  timezone_mismatch_alerts: false,
+                  friday_reminders: "gentle",
+                  saturday_reminders: "gentle",
+                  reminders_paused: false,
+                  urgent_bypasses_quiet_hours: false,
+                  active_timezone: "America/Chicago",
+                  temporary_timezone: null,
+                  temporary_timezone_expires_at: null,
+                  timezone_source: "browser_detected",
+                  timezone_confirmed: true,
+                  pin_configured: true,
+                  sign_in_methods: haAuthenticated
+                    ? ["home_assistant"]
+                    : ["pin"],
+                  home_assistant_display_name: haAuthenticated
+                    ? "Taylor"
+                    : null,
+                  photo_uploads_enabled: false,
+                }
             : url.includes("/progress")
               ? progress
               : url.includes("/plan")
@@ -131,6 +164,35 @@ test("renders application navigation", async () => {
     </QueryClientProvider>,
   );
   expect((await screen.findAllByText("Today")).length).toBeGreaterThan(0);
+});
+
+test("hides lock and PIN controls for Home Assistant sessions", async () => {
+  haAuthenticated = true;
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <App />
+    </QueryClientProvider>,
+  );
+
+  expect(
+    await screen.findByRole("heading", { name: "Good morning, John" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Lock dashboard" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Lock" }),
+  ).not.toBeInTheDocument();
+
+  const settingsButtons = screen.getAllByRole("button", { name: "Settings" });
+  fireEvent.click(settingsButtons[0]);
+  expect(
+    await screen.findByRole("heading", { name: "Settings" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole("heading", { name: "Update PIN" }),
+  ).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Current PIN")).not.toBeInTheDocument();
 });
 
 test("shows first-time setup before the dashboard", async () => {

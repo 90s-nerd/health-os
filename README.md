@@ -5,7 +5,7 @@ Health OS is a calm, self-hosted personal health dashboard for routines, hydrati
 Health OS supports two deployment modes:
 
 - **Standalone:** each person signs in with a unique PIN. Accounts are independent; there is no household administrator or member-management screen.
-- **Home Assistant app:** Home Assistant Ingress signs each Home Assistant user into a separate Health OS account using their stable Home Assistant user ID. No PIN is required, although a user may add one for optional standalone access to the same account.
+- **Home Assistant app:** Home Assistant Ingress signs each Home Assistant user into a separate Health OS account using their stable Home Assistant user ID. PIN and lock controls are hidden because Home Assistant owns the session.
 
 Identity providers are never matched by display name. Linking another sign-in method is an explicit, authenticated action, so people with similar names cannot accidentally share health data.
 
