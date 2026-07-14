@@ -144,6 +144,18 @@ docker build -t health-os .
 
 The automated suite covers standalone and Home Assistant identity isolation, spoofed-header rejection, onboarding, PIN linking, timezone day boundaries, Sunday schedules, travel expiry, DST gaps/overlaps, quiet hours, idempotent task completion, preserved historical dates, and durable notification delivery.
 
+## Releases
+
+Releases are managed by Release Please. Use Conventional Commit prefixes such as `fix:`, `feat:`,
+and `feat!:` on changes merged to `main`. Release Please maintains a release pull request that
+updates `home-assistant-app/config.yaml` and `home-assistant-app/CHANGELOG.md`. Merging that pull
+request creates the matching `vX.Y.Z` GitHub release and publishes the exact and `latest` GHCR
+container tags for `amd64` and `aarch64`.
+
+The container publishing workflow is reusable and may also be started manually with an explicit
+version, but normal releases should go through the generated release pull request so the app
+manifest, changelog, Git tag, and container tag stay synchronized.
+
 ## Troubleshooting
 
 - **Database is read-only:** grant the container write permission to the configured data and backup directories using your host platform's ownership or ACL tools.
