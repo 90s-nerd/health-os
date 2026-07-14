@@ -1376,12 +1376,15 @@ input:focus-visible {
 }
 .field-grid label {
   align-content: start;
+  min-width: 0;
 }
 .field-grid input,
 .field-grid select,
 .field-grid textarea,
 .origin-field textarea {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   color: inherit;
   background: #fafcfa;
   border: 1px solid var(--line);
@@ -2096,6 +2099,14 @@ input:focus-visible {
   }
   .field-grid {
     grid-template-columns: 1fr;
+  }
+  .field-grid input[type="time"] {
+    display: block;
+    inline-size: 100%;
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    appearance: none;
+    -webkit-appearance: none;
   }
   .plan-heading {
     display: block;
