@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/90s-nerd/health-os/compare/v1.0.4...v1.1.0) (2026-07-14)
+
+
+### Features
+
+* restore secure household access ([#4](https://github.com/90s-nerd/health-os/issues/4)) ([ef37675](https://github.com/90s-nerd/health-os/commit/ef37675cadf6e290dcc7606c415a7b8fd0c4bdb1))
+
 ## [1.0.4](https://github.com/90s-nerd/health-os/compare/v1.0.3...v1.0.4) (2026-07-14)
 
 
