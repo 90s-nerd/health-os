@@ -1,5 +1,5 @@
 name: Health OS
-version: 1.1.0
+version: 1.1.1
 slug: health_os
 description: Private, per-user health routines and progress through Home Assistant Ingress
 url: https://github.com/90s-nerd/health-os
