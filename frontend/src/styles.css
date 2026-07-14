@@ -1470,6 +1470,84 @@ input:focus-visible {
 .pin-form {
   margin-top: 14px;
 }
+.household-panel.form-section {
+  margin-top: 14px;
+}
+.household-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.household-heading h3 {
+  margin: 6px 0 5px;
+}
+.household-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.household-heading > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  border: 0;
+  background: var(--green);
+}
+.household-form {
+  padding: 18px;
+  margin: 18px 0;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--background);
+}
+.member-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+}
+.member-list > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.member-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  color: var(--green-deep);
+  background: var(--mint);
+  font-weight: 800;
+}
+.member-list > div > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+}
+.member-list small {
+  color: var(--muted);
+}
+.member-list i {
+  padding: 3px 7px;
+  margin-left: auto;
+  border-radius: 99px;
+  color: var(--green-deep);
+  background: var(--mint);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 800;
+}
+.member-remove {
+  margin-left: auto;
+  color: var(--muted);
+}
+.member-remove:hover {
+  color: #b64c4c;
+}
 .button-row {
   display: flex;
   gap: 7px;
@@ -1710,47 +1788,34 @@ input:focus-visible {
   color: var(--muted);
   font-size: 13px;
 }
-.login-access form {
+.login-pin-form {
   display: grid;
   gap: 13px;
 }
-.pin-field {
+.pin-entry {
   display: grid;
-  gap: 8px;
-  color: #415149;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0.03em;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
 }
-.pin-input-wrap {
-  position: relative;
-  display: block;
-}
-.pin-input-wrap > svg {
-  position: absolute;
-  left: 15px;
-  top: 50%;
-  z-index: 1;
-  transform: translateY(-50%);
-  color: var(--muted);
-  pointer-events: none;
-}
-.login-access input[type="password"] {
+.pin-entry input[type="password"] {
   width: 100%;
-  height: 52px;
-  padding: 0 15px 0 45px;
+  height: 62px;
+  padding: 0;
+  text-align: center;
   border: 1px solid var(--line);
   border-radius: 12px;
   color: inherit;
   background: #fafcfa;
-  font-size: 16px;
+  font-size: 25px;
+  font-weight: 800;
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease;
 }
-.login-access input[type="password"]:focus {
+.pin-entry input[type="password"]:focus {
   border-color: var(--green);
   box-shadow: 0 0 0 4px rgba(60, 119, 100, 0.1);
+  outline: 0;
 }
 .login-options {
   display: flex;
@@ -1777,31 +1842,15 @@ input:focus-visible {
   margin: 0;
   accent-color: var(--green);
 }
-.login-access form > button {
-  width: 100%;
-  min-height: 50px;
+.pin-opening {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  border: 0;
-  border-radius: 12px;
-  color: white;
-  background: var(--green);
-  box-shadow: 0 9px 20px rgba(60, 119, 100, 0.2);
+  gap: 7px;
+  margin: 2px 0 0;
+  color: var(--green);
+  font-size: 12px;
   font-weight: 800;
-  transition:
-    transform 0.15s ease,
-    background 0.15s ease;
-}
-.login-access form > button:not(:disabled):hover {
-  transform: translateY(-1px);
-  background: var(--green-deep);
-}
-.login-access form > button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-  box-shadow: none;
 }
 .login-footnote {
   display: flex;
@@ -1896,6 +1945,13 @@ input:focus-visible {
   .login-access {
     padding: 30px 25px 28px;
   }
+  .household-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .household-heading > button {
+    align-self: flex-start;
+  }
   .app {
     display: block;
   }
@@ -1953,6 +2009,9 @@ input:focus-visible {
     border-top: 1px solid var(--line);
     background: rgba(250, 252, 249, 0.94);
     backdrop-filter: blur(12px);
+  }
+  .bottom-nav.without-lock {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
   }
   .bottom-nav button {
     min-height: 49px;
@@ -2120,7 +2179,7 @@ input:focus-visible {
   .week-grid article.relaxed {
     background: #27251f;
   }
-  .login-access input[type="password"] {
+  .pin-entry input[type="password"] {
     background: #17201c;
   }
   .login-shell {
@@ -2139,7 +2198,6 @@ input:focus-visible {
   .login-access h2 {
     color: #eef5f1;
   }
-  .pin-field,
   .login-access .keep {
     color: #cbd8d1;
   }

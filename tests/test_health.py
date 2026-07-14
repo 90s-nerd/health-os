@@ -204,7 +204,7 @@ def test_settings_are_user_scoped_and_timezone_is_confirmed(client):
     assert saved["caffeine_cutoff"] == "13:30"
     assert saved["water_target_ml"] == 2400
     assert saved["timezone_confirmed"] is True
-    assert "is_admin" not in saved
+    assert saved["is_admin"] is True
 
 
 def test_invalid_timezone_is_rejected(client):
@@ -220,6 +220,8 @@ def test_pin_can_be_set_and_changed_through_api(client):
     assert client.get("/api/auth/status").json()["pin_required"] is True
     assert client.post("/api/auth/login", json={"pin": "0000"}).status_code == 401
     assert client.post("/api/auth/login", json={"pin": "2468"}).status_code == 200
+    assert client.post("/api/auth/login", json={"pin": "24680"}).status_code == 422
+    assert client.post("/api/auth/login", json={"pin": "abcd"}).status_code == 422
 
 
 def test_water_progress_is_easy_to_add_and_undo(client):
@@ -234,32 +236,69 @@ def test_water_progress_is_easy_to_add_and_undo(client):
     assert client.get("/api/today").json()["water"]["current_ml"] == 350
 
 
-def test_standalone_accounts_are_independent_and_have_no_admin_routes(client):
+def test_admin_creates_and_removes_household_member(client):
     first_id = client.get("/api/auth/status").json()["profile"]["id"]
-    member = {
-        "display_name": "Taylor",
-        "pin": "5678",
-        "timezone": "America/Denver",
-        "starting_weight_kg": 72,
-        "height_cm": 168,
-        "water_target_ml": 1800,
-    }
-    created = client.post("/api/accounts", json=member)
+    household = client.get("/api/household")
+    assert household.status_code == 200
+    assert household.json()[0]["id"] == first_id
+    assert household.json()[0]["is_admin"] is True
+
+    created = client.post(
+        "/api/household", json={"display_name": "Taylor", "pin": "5678"}
+    )
     assert created.status_code == 201
-    client.headers["X-CSRF-Token"] = created.json()["csrf_token"]
-    second_id = client.get("/api/auth/status").json()["profile"]["id"]
-    assert second_id != first_id
-    duplicate = client.post("/api/accounts", json={**member, "display_name": "Other"})
+    member_id = created.json()["id"]
+    duplicate = client.post(
+        "/api/household", json={"display_name": "Other", "pin": "5678"}
+    )
     assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["message"] == "We couldn't add this member. Try again"
+
+    assert client.post("/api/auth/logout").status_code == 200
+    member_login = client.post("/api/auth/login", json={"pin": "5678"})
+    assert member_login.status_code == 200
+    client.headers["X-CSRF-Token"] = member_login.json()["csrf_token"]
+    status = client.get("/api/auth/status").json()
+    assert status["onboarding_required"] is True
+    assert status["profile"]["must_change_pin"] is True
+    assert client.get("/api/today").status_code == 403
+
+    duplicate_setup = client.put(
+        "/api/household/complete-setup",
+        json={
+            "display_name": "Taylor",
+            "timezone": "America/Denver",
+            "starting_weight_kg": 72,
+            "height_cm": 168,
+            "water_target_ml": 1800,
+            "new_pin": "1234",
+        },
+    )
+    assert duplicate_setup.status_code == 409
+    assert duplicate_setup.json()["error"]["message"] == (
+        "We couldn't save that PIN. Try again"
+    )
+
+    completed = client.put(
+        "/api/household/complete-setup",
+        json={
+            "display_name": "Taylor",
+            "timezone": "America/Denver",
+            "starting_weight_kg": 72,
+            "height_cm": 168,
+            "water_target_ml": 1800,
+            "new_pin": "6789",
+        },
+    )
+    assert completed.status_code == 200
+    client.headers["X-CSRF-Token"] = completed.json()["csrf_token"]
     assert client.get("/api/settings").json()["timezone"] == "America/Denver"
     assert client.get("/api/settings").json()["water_target_ml"] == 1800
-    assert client.get("/api/household").status_code == 404
-    assert client.get("/api/plan").json()[0]["suggested_time"] == "07:00"
-    assert client.post(
-        "/api/weight", json={"entry_date": "2026-07-13", "weight_kg": 71.5}
-    ).status_code == 200
+    assert client.get("/api/household").status_code == 403
+
     assert client.post("/api/auth/logout").status_code == 200
-    first_login = client.post("/api/auth/login", json={"pin": "1234"})
-    assert first_login.status_code == 200
-    client.headers["X-CSRF-Token"] = first_login.json()["csrf_token"]
-    assert client.get("/api/progress?range=all").json()["weight"] == []
+    admin_login = client.post("/api/auth/login", json={"pin": "1234"})
+    assert admin_login.status_code == 200
+    client.headers["X-CSRF-Token"] = admin_login.json()["csrf_token"]
+    assert client.delete(f"/api/household/{member_id}").status_code == 200
+    assert len(client.get("/api/household").json()) == 1

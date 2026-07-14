@@ -4,7 +4,7 @@ Health OS is a calm, self-hosted personal health dashboard for routines, hydrati
 
 Health OS supports two deployment modes:
 
-- **Standalone:** each person signs in with a unique PIN. Accounts are independent; there is no household administrator or member-management screen.
+- **Standalone:** the first person becomes the household admin. They can add household members with temporary four-digit PINs; each member completes a private first-time setup and receives separate data and preferences.
 - **Home Assistant app:** Home Assistant Ingress signs each Home Assistant user into a separate Health OS account using their stable Home Assistant user ID. PIN and lock controls are hidden because Home Assistant owns the session.
 
 Identity providers are never matched by display name. Linking another sign-in method is an explicit, authenticated action, so people with similar names cannot accidentally share health data.
@@ -59,7 +59,7 @@ docker compose up -d --build
 
 Open `http://localhost:8080`. Data is stored in the host directory selected by `DATA_DIR`; backups use `BACKUP_HOST_DIR`. Startup applies database migrations before serving traffic. The container runs as a non-root user. If a bind mount is not writable, grant the container write access using the normal ownership or ACL controls for your Docker/NAS platform; no application user ID is involved.
 
-Standalone mode requires `SESSION_SECRET`. The first visitor creates a PIN account through the onboarding wizard. Additional people choose **Create private account** and receive completely independent data and preferences.
+Standalone mode requires `SESSION_SECRET`. The first visitor creates the admin account through the onboarding wizard. Only that admin can add household members from Settings using a name and temporary four-digit PIN. A member then signs in with that temporary PIN, completes their own setup, and chooses a new PIN. There is no public account-registration action on the login screen.
 
 ## Home Assistant app deployment
 
@@ -70,7 +70,7 @@ The app:
 - uses Ingress and exposes no host port;
 - is available to non-admin Home Assistant users (`panel_admin: false`);
 - accepts identity headers only in Home Assistant deployment mode and only from the configured Supervisor proxy network;
-- keys accounts by stable Home Assistant user ID, while names remain informational;
+- keys accounts by stable Home Assistant user ID and takes display names from Home Assistant;
 - stores its SQLite database and generated session secret under `/data`;
 - supports `amd64` and `aarch64` images published to GHCR.
 

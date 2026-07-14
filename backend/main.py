@@ -93,6 +93,22 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         seed(db)
+        if cfg.deployment_mode.lower() == "standalone":
+            has_admin = db.scalar(
+                select(models.Profile.id).where(models.Profile.is_admin.is_(True)).limit(1)
+            )
+            if not has_admin:
+                first_pin_profile = db.scalar(
+                    select(models.Profile)
+                    .where(
+                        models.Profile.pin_hash.is_not(None),
+                        models.Profile.onboarding_completed.is_(True),
+                    )
+                    .order_by(models.Profile.created_at, models.Profile.id)
+                )
+                if first_pin_profile:
+                    first_pin_profile.is_admin = True
+                    db.commit()
     Path(cfg.backup_dir).mkdir(parents=True, exist_ok=True)
     scheduler = BackgroundScheduler(timezone=cfg.timezone)
     scheduler.add_job(
@@ -128,7 +144,6 @@ async def security(request: Request, call_next):
         "/api/auth/login",
         "/api/onboarding",
         "/api/onboarding/home-assistant",
-        "/api/accounts",
     )
     ha_profile = None
     if request.url.path.startswith("/api/") and request.url.path != "/api/health":
@@ -156,6 +171,19 @@ async def security(request: Request, call_next):
                     return JSONResponse(
                         {"error": {"code": 401, "message": "Sign in to continue"}},
                         status_code=401,
+                    )
+                if (
+                    profile.must_change_pin
+                    and request.url.path != "/api/household/complete-setup"
+                ):
+                    return JSONResponse(
+                        {
+                            "error": {
+                                "code": 403,
+                                "message": "Complete first-time setup to continue",
+                            }
+                        },
+                        status_code=403,
                     )
                 request.state.profile_id = profile.id
                 request.state.auth_provider = "pin"
@@ -219,11 +247,11 @@ def auth_status(request: Request, db: Session = Depends(db_session)):
     mode = auth_mode()
     return {
         "onboarding_required": bool(
-            profile and not profile.onboarding_completed
+            profile and (not profile.onboarding_completed or profile.must_change_pin)
             or not profile and not configured_profiles and mode != "home_assistant"
         ),
         "pin_required": mode in {"pin", "auto"} and bool(configured_profiles),
-        "registration_available": mode in {"pin", "auto"},
+        "registration_available": mode in {"pin", "auto"} and not configured_profiles,
         "auth_mode": mode,
         "auth_provider": provider,
         "authenticated": authenticated,
@@ -232,7 +260,10 @@ def auth_status(request: Request, db: Session = Depends(db_session)):
             {
                 "id": profile.id,
                 "display_name": profile.display_name,
-                "setup_required": not profile.onboarding_completed,
+                "setup_required": not profile.onboarding_completed
+                or profile.must_change_pin,
+                "is_admin": profile.is_admin,
+                "must_change_pin": profile.must_change_pin,
             }
             if authenticated and profile
             else None
@@ -274,8 +305,10 @@ def onboarding(
 ):
     if auth_mode() == "home_assistant":
         raise HTTPException(404, "PIN account creation is unavailable in this deployment")
+    if db.scalar(select(models.Profile.id).limit(1)):
+        raise HTTPException(409, "Initial setup is already complete")
     if not pin_is_available(db, body.pin):
-        raise HTTPException(409, "Choose a different PIN")
+        raise HTTPException(409, "We couldn't save that PIN. Try again")
     profile = models.Profile(
         display_name=body.display_name.strip(),
         pin_hash=hash_pin(body.pin),
@@ -283,7 +316,7 @@ def onboarding(
         timezone_source="browser_detected",
         timezone_confirmed_at=utc_now(),
         starting_weight_kg=body.starting_weight_kg,
-        is_admin=False,
+        is_admin=True,
         onboarding_completed=True,
         must_change_pin=False,
     )
@@ -299,17 +332,8 @@ def onboarding(
     return {
         "authenticated": True,
         "csrf_token": set_session_cookies(response, profile),
-        "profile": {"display_name": profile.display_name},
+        "profile": {"display_name": profile.display_name, "is_admin": True},
     }
-
-
-@app.post("/api/accounts", status_code=201)
-def create_account(
-    body: schemas.OnboardingIn,
-    response: Response,
-    db: Session = Depends(db_session),
-):
-    return onboarding(body, response, db)
 
 
 @app.post("/api/onboarding/home-assistant")
@@ -323,7 +347,6 @@ def home_assistant_onboarding(
     profile = db.get(models.Profile, db.info.get("profile_id"))
     if not profile:
         raise HTTPException(401, "Sign in to continue")
-    profile.display_name = body.display_name.strip()
     profile.timezone = body.timezone
     profile.timezone_source = "browser_detected"
     profile.timezone_confirmed_at = utc_now()
@@ -361,7 +384,10 @@ def login(
         "profile": {
             "id": profile.id,
             "display_name": profile.display_name,
-            "setup_required": not profile.onboarding_completed,
+            "setup_required": not profile.onboarding_completed
+            or profile.must_change_pin,
+            "is_admin": profile.is_admin,
+            "must_change_pin": profile.must_change_pin,
         },
     }
 
@@ -387,7 +413,7 @@ def change_pin(
     ):
         raise HTTPException(400, "Current PIN is incorrect")
     if not pin_is_available(db, body.new_pin, profile.id):
-        raise HTTPException(409, "We couldn't save that PIN. Try a different one")
+        raise HTTPException(409, "We couldn't save that PIN. Try again")
     profile.pin_hash = hash_pin(body.new_pin)
     profile.must_change_pin = False
     ensure_pin_identity(db, profile)
@@ -1035,13 +1061,21 @@ def settings(db: Session = Depends(db_session)):
             ha_identity.provider_display_name if ha_identity else None
         ),
         "photo_uploads_enabled": cfg.photo_uploads_enabled,
+        "is_admin": profile.is_admin,
     }
 
 
 @app.put("/api/settings")
 def save_settings(body: schemas.AppSettingsIn, db: Session = Depends(db_session)):
     profile = current_profile(db)
-    profile.display_name = body.display_name.strip()
+    has_home_assistant_identity = db.scalar(
+        select(models.UserIdentity.id).where(
+            models.UserIdentity.user_id == profile.id,
+            models.UserIdentity.provider == "home_assistant",
+        )
+    )
+    if not has_home_assistant_identity:
+        profile.display_name = body.display_name.strip()
     if body.starting_weight_kg is not None:
         profile.starting_weight_kg = body.starting_weight_kg
     if profile.timezone != body.timezone or not profile.timezone_confirmed_at:
@@ -1167,6 +1201,107 @@ def delete_account(response: Response, db: Session = Depends(db_session)):
     db.commit()
     response.delete_cookie("health_session")
     response.delete_cookie("health_csrf")
+    return {"ok": True}
+
+
+def require_household_admin(db: Session) -> models.Profile:
+    if cfg.deployment_mode.lower() != "standalone":
+        raise HTTPException(404, "Household management is unavailable")
+    profile = current_profile(db)
+    if not profile.is_admin:
+        raise HTTPException(403, "Only the household admin can manage members")
+    return profile
+
+
+@app.get("/api/household")
+def household(db: Session = Depends(db_session)):
+    require_household_admin(db)
+    return [
+        {
+            "id": member.id,
+            "display_name": member.display_name,
+            "timezone": member.timezone,
+            "is_admin": member.is_admin,
+            "must_change_pin": member.must_change_pin,
+        }
+        for member in db.scalars(
+            select(models.Profile)
+            .where(models.Profile.onboarding_completed.is_(True))
+            .order_by(models.Profile.created_at, models.Profile.id)
+        )
+    ]
+
+
+@app.post("/api/household", status_code=201)
+def add_household_member(
+    body: schemas.HouseholdMemberIn,
+    db: Session = Depends(db_session),
+):
+    admin = require_household_admin(db)
+    if not pin_is_available(db, body.pin):
+        raise HTTPException(409, "We couldn't add this member. Try again")
+    member = models.Profile(
+        display_name=body.display_name.strip(),
+        timezone=admin.timezone,
+        timezone_source="temporary_admin_default",
+        pin_hash=hash_pin(body.pin),
+        is_admin=False,
+        onboarding_completed=True,
+        must_change_pin=True,
+    )
+    db.add(member)
+    db.flush()
+    ensure_pin_identity(db, member)
+    seed_profile(db, member)
+    db.commit()
+    return {"id": member.id, "ok": True}
+
+
+@app.put("/api/household/complete-setup")
+def complete_member_setup(
+    body: schemas.MemberSetupIn,
+    response: Response,
+    db: Session = Depends(db_session),
+):
+    profile = current_profile(db)
+    if cfg.deployment_mode.lower() != "standalone" or not profile.must_change_pin:
+        raise HTTPException(409, "First-time setup is already complete")
+    if verify_pin(body.new_pin, profile.pin_hash) or not pin_is_available(
+        db, body.new_pin, profile.id
+    ):
+        raise HTTPException(409, "We couldn't save that PIN. Try again")
+    profile.display_name = body.display_name.strip()
+    profile.timezone = body.timezone
+    profile.timezone_source = "user_selected"
+    profile.timezone_confirmed_at = utc_now()
+    profile.starting_weight_kg = body.starting_weight_kg
+    if body.height_cm is not None:
+        profile.height_cm = body.height_cm
+    profile.pin_hash = hash_pin(body.new_pin)
+    profile.must_change_pin = False
+    identity = ensure_pin_identity(db, profile)
+    identity.provider_display_name = profile.display_name
+    water = db.get(models.UserSetting, (profile.id, "water_target_ml"))
+    if water:
+        water.value = str(body.water_target_ml)
+    db.commit()
+    return {
+        "ok": True,
+        "csrf_token": set_session_cookies(response, profile),
+        "message": "Your dashboard is ready",
+    }
+
+
+@app.delete("/api/household/{member_id}")
+def remove_household_member(member_id: int, db: Session = Depends(db_session)):
+    admin = require_household_admin(db)
+    member = db.get(models.Profile, member_id)
+    if not member:
+        raise HTTPException(404, "Household member not found")
+    if member.is_admin or member.id == admin.id:
+        raise HTTPException(400, "The household admin cannot be removed")
+    delete_user_data(db, member)
+    db.commit()
     return {"ok": True}
 
 
