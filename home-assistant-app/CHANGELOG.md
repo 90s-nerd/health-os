@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.4](https://github.com/90s-nerd/health-os/compare/v1.0.3...v1.0.4) (2026-07-14)
+
+
+### Bug Fixes
+
+* simplify Home Assistant session controls ([1cde8df](https://github.com/90s-nerd/health-os/commit/1cde8dfbecee999eea016806710011b6d0f925cd))
+
 ## [1.0.3](https://github.com/90s-nerd/health-os/compare/v1.0.2...v1.0.3) (2026-07-14)
 
 
