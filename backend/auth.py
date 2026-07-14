@@ -108,6 +108,8 @@ def profile_for_home_assistant(request: Request, db: Session) -> Profile | None:
         identity.updated_at = now
         identity.last_login_at = now
         profile = db.get(Profile, identity.user_id)
+        if display_name:
+            profile.display_name = display_name.strip()[:80]
         db.commit()
         return profile
     profile = Profile(

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -54,6 +54,75 @@ const nav = [
 
 const detectedTimezone =
   Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+const pinDigits = (value: string) => value.replace(/\D/g, "").slice(0, 4);
+
+function PinEntry({
+  value,
+  onChange,
+  onComplete,
+  disabled = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onComplete?: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const inputs = useRef<Array<HTMLInputElement | null>>([]);
+
+  useEffect(() => {
+    if (!value) inputs.current[0]?.focus();
+  }, [value]);
+
+  const update = (index: number, raw: string) => {
+    const digit = raw.replace(/\D/g, "").slice(-1);
+    const next = digit
+      ? `${value.slice(0, index)}${digit}${value.slice(index + 1)}`
+      : value.slice(0, index);
+    onChange(next);
+    if (digit && index < 3) inputs.current[index + 1]?.focus();
+    if (next.length === 4) onComplete?.(next);
+  };
+
+  const paste = (event: React.ClipboardEvent) => {
+    const next = pinDigits(event.clipboardData.getData("text"));
+    if (!next) return;
+    event.preventDefault();
+    onChange(next);
+    inputs.current[Math.min(next.length, 4) - 1]?.focus();
+    if (next.length === 4) onComplete?.(next);
+  };
+
+  return (
+    <div className="pin-entry" role="group" aria-label="Four-digit PIN">
+      {Array.from({ length: 4 }, (_, index) => (
+        <input
+          key={index}
+          ref={(element) => {
+            inputs.current[index] = element;
+          }}
+          type="password"
+          inputMode="numeric"
+          autoComplete={index === 0 ? "current-password" : "off"}
+          aria-label={`PIN digit ${index + 1}`}
+          maxLength={1}
+          value={value[index] || ""}
+          disabled={disabled}
+          onPaste={paste}
+          onChange={(event) => update(index, event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Backspace" && !value[index] && index > 0) {
+              inputs.current[index - 1]?.focus();
+            }
+            if (event.key === "ArrowLeft" && index > 0)
+              inputs.current[index - 1]?.focus();
+            if (event.key === "ArrowRight" && index < 3)
+              inputs.current[index + 1]?.focus();
+          }}
+        />
+      ))}
+    </div>
+  );
+}
 const supportedTimezones = (
   Intl as typeof Intl & {
     supportedValuesOf?: (key: "timeZone") => string[];
@@ -1377,6 +1446,156 @@ function Settings() {
   return <SettingsEditor initial={q.data!} />;
 }
 
+function HouseholdPanel() {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  const [form, setForm] = useState({ display_name: "", pin: "" });
+  const members = useQuery({
+    queryKey: ["household"],
+    queryFn: () =>
+      api<
+        {
+          id: number;
+          display_name: string;
+          timezone: string;
+          is_admin: boolean;
+          must_change_pin: boolean;
+        }[]
+      >("/household"),
+  });
+  const add = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setMessage("");
+    try {
+      await post("/household", form);
+      setOpen(false);
+      setForm({ display_name: "", pin: "" });
+      await qc.invalidateQueries({ queryKey: ["household"] });
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not add this member",
+      );
+    }
+  };
+  const remove = async (member: { id: number; display_name: string }) => {
+    if (
+      !confirm(
+        `Remove ${member.display_name} and all of their health data from this server? This cannot be undone.`,
+      )
+    )
+      return;
+    setMessage("");
+    setRemovingId(member.id);
+    try {
+      await api(`/household/${member.id}`, { method: "DELETE" });
+      await qc.invalidateQueries({ queryKey: ["household"] });
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Could not remove this member",
+      );
+    } finally {
+      setRemovingId(null);
+    }
+  };
+  return (
+    <section className="form-section household-panel">
+      <div className="household-heading">
+        <div>
+          <span className="eyebrow">Household</span>
+          <h3>People on this server</h3>
+          <p>Each PIN opens a separate dashboard, plan, and health history.</p>
+        </div>
+        <button type="button" onClick={() => setOpen(!open)}>
+          <Plus size={16} /> Add member
+        </button>
+      </div>
+      {open && (
+        <form className="household-form" onSubmit={add}>
+          <div className="field-grid">
+            <label>
+              Name
+              <input
+                value={form.display_name}
+                onChange={(event) =>
+                  setForm({ ...form, display_name: event.target.value })
+                }
+                required
+              />
+            </label>
+            <label>
+              Temporary PIN
+              <input
+                type="password"
+                inputMode="numeric"
+                minLength={4}
+                maxLength={4}
+                pattern="[0-9]{4}"
+                value={form.pin}
+                onChange={(event) =>
+                  setForm({ ...form, pin: pinDigits(event.target.value) })
+                }
+                required
+              />
+              <small>They'll replace this after their first sign-in.</small>
+            </label>
+          </div>
+          <div className="save-row">
+            <button type="submit">Create member</button>
+            <button
+              type="button"
+              className="quiet-button"
+              onClick={() => setOpen(false)}
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+      {message && (
+        <p className="form-error" role="alert">
+          {message}
+        </p>
+      )}
+      <div className="member-list">
+        {members.data?.map((member) => (
+          <div key={member.id}>
+            <span className="member-avatar">
+              {member.display_name.slice(0, 1).toUpperCase()}
+            </span>
+            <span>
+              <strong>{member.display_name}</strong>
+              <small>
+                {member.timezone}
+                {member.must_change_pin ? " · Awaiting first sign-in" : ""}
+              </small>
+            </span>
+            {member.is_admin ? (
+              <i>Admin</i>
+            ) : (
+              <button
+                type="button"
+                className="icon-button member-remove"
+                aria-label={`Remove ${member.display_name}`}
+                title="Remove member"
+                disabled={removingId === member.id}
+                onClick={() => remove(member)}
+              >
+                {removingId === member.id ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : (
+                  <Trash2 size={16} />
+                )}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 type AppSettings = {
   display_name: string;
   starting_weight_kg: number;
@@ -1401,6 +1620,7 @@ type AppSettings = {
   sign_in_methods: string[];
   home_assistant_display_name: string | null;
   photo_uploads_enabled: boolean;
+  is_admin: boolean;
 };
 
 function SettingsEditor({ initial }: { initial: AppSettings }) {
@@ -1526,11 +1746,12 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
       <form className="settings-form" onSubmit={save}>
         <section className="form-section">
           <div className="form-heading">
-            <span className="eyebrow">Time and notifications</span>
+            <span className="eyebrow">Daily preferences</span>
             <h3>Your schedule and targets</h3>
             <p>
-              Personal baselines for your progress, hydration, and future
-              notifications. Task times are managed in your Plan.
+              {hasHomeAssistant
+                ? "Personal baselines for progress, hydration, and Home Assistant notifications. Task times are managed in your Plan."
+                : "Personal baselines for progress and hydration. Task times are managed in your Plan."}
             </p>
           </div>
           {timezoneNotice && (
@@ -1586,14 +1807,16 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
             </div>
           )}
           <div className="field-grid">
-            <label>
-              Display name
-              <input
-                value={form.display_name}
-                onChange={(event) => set("display_name", event.target.value)}
-                required
-              />
-            </label>
+            {!hasHomeAssistant && (
+              <label>
+                Display name
+                <input
+                  value={form.display_name}
+                  onChange={(event) => set("display_name", event.target.value)}
+                  required
+                />
+              </label>
+            )}
             <label>
               Starting weight (kg)
               <input
@@ -1649,93 +1872,99 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
               />
               <small>Separate milestones with commas, highest to lowest.</small>
             </label>
-            <label>
-              Quiet hours start
-              <input
-                type="time"
-                value={form.quiet_hours_start}
-                onChange={(event) =>
-                  set("quiet_hours_start", event.target.value)
-                }
-              />
-            </label>
-            <label>
-              Quiet hours end
-              <input
-                type="time"
-                value={form.quiet_hours_end}
-                onChange={(event) => set("quiet_hours_end", event.target.value)}
-              />
-            </label>
-            <label className="wide-field">
-              Home Assistant notification target
-              <input
-                value={form.notification_target}
-                onChange={(event) =>
-                  set("notification_target", event.target.value)
-                }
-                placeholder="notify.mobile_app_my_phone"
-              />
-              <small>This target is private to your account.</small>
-            </label>
-            <label>
-              Friday reminders
-              <select
-                value={form.friday_reminders}
-                onChange={(event) =>
-                  set("friday_reminders", event.target.value)
-                }
-              >
-                <option value="normal">Normal</option>
-                <option value="gentle">Gentle</option>
-                <option value="paused">Paused</option>
-              </select>
-            </label>
-            <label>
-              Saturday reminders
-              <select
-                value={form.saturday_reminders}
-                onChange={(event) =>
-                  set("saturday_reminders", event.target.value)
-                }
-              >
-                <option value="normal">Normal</option>
-                <option value="gentle">Gentle</option>
-                <option value="paused">Paused</option>
-              </select>
-            </label>
-            <label className="wide-field check-row">
-              <input
-                type="checkbox"
-                checked={form.reminders_paused}
-                onChange={(event) =>
-                  set("reminders_paused", event.target.checked)
-                }
-              />
-              <span>
-                Pause all reminders
-                <small>
-                  Existing schedules stay saved and resume when this is turned
-                  off.
-                </small>
-              </span>
-            </label>
-            <label className="wide-field check-row">
-              <input
-                type="checkbox"
-                checked={form.urgent_bypasses_quiet_hours}
-                onChange={(event) =>
-                  set("urgent_bypasses_quiet_hours", event.target.checked)
-                }
-              />
-              <span>
-                Allow urgent safety reminders during quiet hours
-                <small>
-                  Only reminder rules explicitly marked urgent can bypass quiet
-                  hours.
-                </small>
-              </span>
-            </label>
+            {hasHomeAssistant && (
+              <>
+                <label>
+                  Quiet hours start
+                  <input
+                    type="time"
+                    value={form.quiet_hours_start}
+                    onChange={(event) =>
+                      set("quiet_hours_start", event.target.value)
+                    }
+                  />
+                </label>
+                <label>
+                  Quiet hours end
+                  <input
+                    type="time"
+                    value={form.quiet_hours_end}
+                    onChange={(event) =>
+                      set("quiet_hours_end", event.target.value)
+                    }
+                  />
+                </label>
+                <label className="wide-field">
+                  Home Assistant notification target
+                  <input
+                    value={form.notification_target}
+                    onChange={(event) =>
+                      set("notification_target", event.target.value)
+                    }
+                    placeholder="notify.mobile_app_my_phone"
+                  />
+                  <small>This target is private to your account.</small>
+                </label>
+                <label>
+                  Friday reminders
+                  <select
+                    value={form.friday_reminders}
+                    onChange={(event) =>
+                      set("friday_reminders", event.target.value)
+                    }
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="gentle">Gentle</option>
+                    <option value="paused">Paused</option>
+                  </select>
+                </label>
+                <label>
+                  Saturday reminders
+                  <select
+                    value={form.saturday_reminders}
+                    onChange={(event) =>
+                      set("saturday_reminders", event.target.value)
+                    }
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="gentle">Gentle</option>
+                    <option value="paused">Paused</option>
+                  </select>
+                </label>
+                <label className="wide-field check-row">
+                  <input
+                    type="checkbox"
+                    checked={form.reminders_paused}
+                    onChange={(event) =>
+                      set("reminders_paused", event.target.checked)
+                    }
+                  />
+                  <span>
+                    Pause all reminders
+                    <small>
+                      Existing schedules stay saved and resume when this is
+                      turned off.
+                    </small>
+                  </span>
+                </label>
+                <label className="wide-field check-row">
+                  <input
+                    type="checkbox"
+                    checked={form.urgent_bypasses_quiet_hours}
+                    onChange={(event) =>
+                      set("urgent_bypasses_quiet_hours", event.target.checked)
+                    }
+                  />
+                  <span>
+                    Allow urgent safety reminders during quiet hours
+                    <small>
+                      Only reminder rules explicitly marked urgent can bypass
+                      quiet hours.
+                    </small>
+                  </span>
+                </label>
+              </>
+            )}
           </div>
         </section>
 
@@ -1761,8 +1990,13 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
                 <input
                   type="password"
                   inputMode="numeric"
+                  minLength={4}
+                  maxLength={4}
+                  pattern="[0-9]{4}"
                   value={currentPin}
-                  onChange={(event) => setCurrentPin(event.target.value)}
+                  onChange={(event) =>
+                    setCurrentPin(pinDigits(event.target.value))
+                  }
                   required
                 />
               </label>
@@ -1773,8 +2007,10 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
                 type="password"
                 inputMode="numeric"
                 minLength={4}
+                maxLength={4}
+                pattern="[0-9]{4}"
                 value={newPin}
-                onChange={(event) => setNewPin(event.target.value)}
+                onChange={(event) => setNewPin(pinDigits(event.target.value))}
                 required
               />
             </label>
@@ -1784,8 +2020,12 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
                 type="password"
                 inputMode="numeric"
                 minLength={4}
+                maxLength={4}
+                pattern="[0-9]{4}"
                 value={confirmPin}
-                onChange={(event) => setConfirmPin(event.target.value)}
+                onChange={(event) =>
+                  setConfirmPin(pinDigits(event.target.value))
+                }
                 required
               />
             </label>
@@ -1798,6 +2038,8 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
           </div>
         </form>
       )}
+
+      {!hasHomeAssistant && initial.is_admin && <HouseholdPanel />}
 
       <section className="panel">
         <h3>Your data</h3>
@@ -1839,9 +2081,11 @@ function PageTitle({
 }
 function Onboarding({
   homeAssistant = false,
+  memberSetup = false,
   initialName = "",
 }: {
   homeAssistant?: boolean;
+  memberSetup?: boolean;
   initialName?: string;
 }) {
   const [step, setStep] = useState(1);
@@ -1871,14 +2115,28 @@ function Onboarding({
       return;
     }
     setBusy(true);
-    post(homeAssistant ? "/onboarding/home-assistant" : "/onboarding", {
-      display_name: form.display_name,
+    const payload = {
+      ...(homeAssistant ? {} : { display_name: form.display_name }),
       timezone: form.timezone,
       starting_weight_kg: Number(form.starting_weight_kg),
       height_cm: form.height_cm ? Number(form.height_cm) : null,
       water_target_ml: Number(form.water_target_ml),
       ...(homeAssistant ? {} : { pin: form.pin }),
-    })
+    };
+    const request = memberSetup
+      ? api("/household/complete-setup", {
+          method: "PUT",
+          body: JSON.stringify({
+            ...payload,
+            pin: undefined,
+            new_pin: form.pin,
+          }),
+        })
+      : post(
+          homeAssistant ? "/onboarding/home-assistant" : "/onboarding",
+          payload,
+        );
+    request
       .then(() => location.reload())
       .catch((reason) => {
         setError(reason.message);
@@ -1912,7 +2170,7 @@ function Onboarding({
           {step === 1 && (
             <>
               <span className="eyebrow">
-                Step 1 of {homeAssistant ? 2 : 3} · About you
+                Step 1 of {homeAssistant ? 2 : 3} · Your schedule
               </span>
               <h1>Let’s make this yours.</h1>
               <p>
@@ -1920,18 +2178,21 @@ function Onboarding({
                 choose another timezone for your Health OS schedule.
               </p>
               <div className="field-grid onboarding-fields">
-                <label className="wide-field">
-                  Your name
-                  <input
-                    autoFocus
-                    value={form.display_name}
-                    onChange={(e) => set("display_name", e.target.value)}
-                    required
-                  />
-                </label>
+                {!homeAssistant && (
+                  <label className="wide-field">
+                    Your name
+                    <input
+                      autoFocus
+                      value={form.display_name}
+                      onChange={(e) => set("display_name", e.target.value)}
+                      required
+                    />
+                  </label>
+                )}
                 <label className="wide-field">
                   Timezone
                   <TimezoneSelect
+                    autoFocus={homeAssistant}
                     value={form.timezone}
                     onChange={(value) => set("timezone", value)}
                   />
@@ -1990,7 +2251,11 @@ function Onboarding({
             <>
               <span className="eyebrow">Step 3 of 3 · Private access</span>
               <h1>Choose your PIN.</h1>
-              <p>This PIN identifies you and opens only your dashboard.</p>
+              <p>
+                {memberSetup
+                  ? "Replace the temporary PIN with one only you know."
+                  : "This PIN identifies you and opens only your dashboard."}
+              </p>
               <div className="field-grid onboarding-fields">
                 <label>
                   PIN
@@ -1999,8 +2264,10 @@ function Onboarding({
                     type="password"
                     inputMode="numeric"
                     minLength={4}
+                    maxLength={4}
+                    pattern="[0-9]{4}"
                     value={form.pin}
-                    onChange={(e) => set("pin", e.target.value)}
+                    onChange={(e) => set("pin", pinDigits(e.target.value))}
                     required
                   />
                 </label>
@@ -2010,8 +2277,12 @@ function Onboarding({
                     type="password"
                     inputMode="numeric"
                     minLength={4}
+                    maxLength={4}
+                    pattern="[0-9]{4}"
                     value={form.confirm_pin}
-                    onChange={(e) => set("confirm_pin", e.target.value)}
+                    onChange={(e) =>
+                      set("confirm_pin", pinDigits(e.target.value))
+                    }
                     required
                   />
                 </label>
@@ -2051,11 +2322,23 @@ function Onboarding({
     </main>
   );
 }
-function Login({ onCreate }: { onCreate: () => void }) {
+function Login() {
   const [pin, setPin] = useState("");
   const [keep, setKeep] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const login = (completedPin: string) => {
+    if (busy || completedPin.length !== 4) return;
+    setBusy(true);
+    setError("");
+    post("/auth/login", { pin: completedPin, keep_signed_in: keep })
+      .then(() => location.reload())
+      .catch((reason) => {
+        setError(reason.message);
+        setPin("");
+        setBusy(false);
+      });
+  };
   return (
     <main className="login-shell">
       <section className="login-card">
@@ -2094,34 +2377,16 @@ function Login({ onCreate }: { onCreate: () => void }) {
           <p className="login-instruction">
             Your dashboard is locked to keep your health data private.
           </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              setBusy(true);
-              setError("");
-              post("/auth/login", { pin, keep_signed_in: keep })
-                .then(() => location.reload())
-                .catch((e) => {
-                  setError(e.message);
-                  setBusy(false);
-                });
-            }}
-          >
-            <label className="pin-field">
-              <span className="sr-only">PIN</span>
-              <span className="pin-input-wrap">
-                <LockKeyhole size={18} aria-hidden="true" />
-                <input
-                  type="password"
-                  inputMode="numeric"
-                  autoComplete="current-password"
-                  autoFocus
-                  value={pin}
-                  onChange={(e) => setPin(e.target.value)}
-                  placeholder="PIN"
-                />
-              </span>
-            </label>
+          <div className="login-pin-form">
+            <PinEntry
+              value={pin}
+              onChange={(value) => {
+                setPin(value);
+                setError("");
+              }}
+              onComplete={login}
+              disabled={busy}
+            />
             <div className="login-options">
               <label className="keep">
                 <input
@@ -2129,7 +2394,7 @@ function Login({ onCreate }: { onCreate: () => void }) {
                   checked={keep}
                   onChange={(e) => setKeep(e.target.checked)}
                 />
-                <span>Keep me signed in</span>
+                <span>Keep it unlocked</span>
               </label>
             </div>
             {error && (
@@ -2137,18 +2402,16 @@ function Login({ onCreate }: { onCreate: () => void }) {
                 {error}
               </p>
             )}
-            <button disabled={busy || pin.length < 4}>
-              <span>{busy ? "Opening…" : "Continue"}</span>
-              {!busy && <ArrowRight size={18} />}
-            </button>
-          </form>
+            {busy && (
+              <p className="pin-opening" role="status">
+                <LoaderCircle className="spin" size={16} /> Opening…
+              </p>
+            )}
+          </div>
           <p className="login-footnote">
             <ShieldCheck size={14} /> Your PIN is verified locally and never
             leaves your server.
           </p>
-          <button type="button" className="quiet-button" onClick={onCreate}>
-            Create a private account
-          </button>
         </div>
       </section>
     </main>
@@ -2160,23 +2423,21 @@ export default function App() {
     queryFn: () => api<any>("/auth/status"),
   });
   const [view, setView] = useState<View>("today");
-  const [creatingAccount, setCreatingAccount] = useState(false);
   const embedded =
     new URLSearchParams(location.search).get("embedded") === "true";
   const homeAssistantSession = auth.data?.auth_provider === "home_assistant";
   const lockDashboard = () =>
     post("/auth/logout").then(() => location.reload());
   if (auth.isLoading) return <Loading />;
-  if (creatingAccount) return <Onboarding />;
   if (auth.data?.onboarding_required)
     return (
       <Onboarding
         homeAssistant={auth.data.auth_provider === "home_assistant"}
+        memberSetup={Boolean(auth.data.profile?.must_change_pin)}
         initialName={auth.data.profile?.display_name || ""}
       />
     );
-  if (auth.data?.pin_required && !auth.data.authenticated)
-    return <Login onCreate={() => setCreatingAccount(true)} />;
+  if (auth.data?.pin_required && !auth.data.authenticated) return <Login />;
   if (!auth.data?.authenticated)
     return (
       <main className="onboarding-shell">
@@ -2234,7 +2495,9 @@ export default function App() {
         </div>
       </aside>
       <main className="content">{views[view]}</main>
-      <nav className="bottom-nav">
+      <nav
+        className={`bottom-nav ${homeAssistantSession ? "without-lock" : ""}`}
+      >
         {nav.map(([key, label, Icon]) => (
           <button
             key={key}

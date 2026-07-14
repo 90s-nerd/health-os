@@ -142,18 +142,43 @@ class MealIn(BaseModel):
 
 
 class LoginIn(BaseModel):
-    pin: str = Field(min_length=4, max_length=64)
+    pin: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$")
     keep_signed_in: bool = False
 
 
 class PinChangeIn(BaseModel):
-    current_pin: str | None = Field(default=None, max_length=64)
-    new_pin: str = Field(min_length=4, max_length=64)
+    current_pin: str | None = Field(
+        default=None, min_length=4, max_length=4, pattern=r"^\d{4}$"
+    )
+    new_pin: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$")
+
+
+class HouseholdMemberIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+    pin: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$")
+
+
+class MemberSetupIn(BaseModel):
+    display_name: str = Field(min_length=1, max_length=80)
+    timezone: str = Field(min_length=1, max_length=80)
+    starting_weight_kg: float = Field(gt=20, lt=400)
+    height_cm: float | None = Field(default=None, gt=80, lt=250)
+    water_target_ml: int = Field(default=2000, ge=250, le=10000)
+    new_pin: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$")
+
+    @field_validator("timezone")
+    @classmethod
+    def member_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("Use a valid IANA timezone such as America/Chicago") from exc
+        return value
 
 
 class OnboardingIn(BaseModel):
     display_name: str = Field(min_length=1, max_length=80)
-    pin: str = Field(min_length=4, max_length=64)
+    pin: str = Field(min_length=4, max_length=4, pattern=r"^\d{4}$")
     timezone: str = Field(min_length=1, max_length=80)
     starting_weight_kg: float = Field(gt=20, lt=400)
     height_cm: float | None = Field(default=None, gt=80, lt=250)
@@ -170,7 +195,6 @@ class OnboardingIn(BaseModel):
 
 
 class HomeAssistantOnboardingIn(BaseModel):
-    display_name: str = Field(min_length=1, max_length=80)
     timezone: str = Field(min_length=1, max_length=80)
     starting_weight_kg: float = Field(gt=20, lt=400)
     height_cm: float | None = Field(default=None, gt=80, lt=250)

@@ -34,7 +34,6 @@ def finish_ha_onboarding(client: TestClient, headers: dict[str, str], timezone: 
         "/api/onboarding/home-assistant",
         headers=headers,
         json={
-            "display_name": headers["X-Remote-User-Display-Name"],
             "timezone": timezone,
             "starting_weight_kg": 80,
             "height_cm": 175,
@@ -81,6 +80,8 @@ def test_returning_ha_identity_and_display_name_change_do_not_duplicate_account(
             assert db.scalar(select(func.count()).select_from(models.Profile)) == 1
             identity = db.scalar(select(models.UserIdentity))
             assert identity.provider_display_name == "Changed Name"
+            profile = db.get(models.Profile, original)
+            assert profile.display_name == "Changed Name"
 
 
 def test_ha_users_cannot_read_each_others_health_data():
