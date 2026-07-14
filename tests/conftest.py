@@ -37,4 +37,5 @@ def client():
             },
         )
         assert response.status_code == 201
+        value.headers["X-CSRF-Token"] = response.json()["csrf_token"]
         yield value

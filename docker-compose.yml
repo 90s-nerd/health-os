@@ -7,6 +7,10 @@ services:
       - "8080:8080"
     environment:
       TZ: ${TZ:-America/Chicago}
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-standalone}
+      AUTH_MODE: ${AUTH_MODE:-pin}
+      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-America/Chicago}
+      HA_TRUSTED_PROXIES: ${HA_TRUSTED_PROXIES:-172.30.32.2/32}
       EMBEDDED_MODE: ${EMBEDDED_MODE:-false}
       DATABASE_URL: sqlite:////data/health-os.db
       BACKUP_DIR: /backups

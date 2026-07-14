@@ -1,5 +1,5 @@
-from sqlalchemy import create_engine
 from fastapi import Request
+from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .config import get_config

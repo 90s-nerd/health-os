@@ -1319,83 +1319,18 @@ input:focus-visible {
   display: grid;
   gap: 14px;
 }
-.household-panel.form-section {
-  margin-top: 14px;
+.timezone-notice {
+  padding: 14px;
+  margin-bottom: 16px;
+  border: 1px solid #d8c997;
+  border-radius: 12px;
+  background: #fff9e8;
 }
-.household-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 20px;
+.timezone-notice p {
+  margin: 0 0 10px;
 }
-.household-heading h3 {
-  margin: 6px 0 5px;
-}
-.household-heading p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-.household-heading > button {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-  border: 0;
-  background: var(--green);
-}
-.household-form {
-  padding: 18px;
-  margin: 18px 0;
-  border: 1px solid var(--line);
-  border-radius: 13px;
-  background: var(--background);
-}
-.member-list {
-  display: grid;
-  gap: 7px;
-  margin-top: 18px;
-}
-.member-list > div {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 0;
-  border-top: 1px solid var(--line);
-}
-.member-avatar {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  color: var(--green-deep);
-  background: var(--mint);
-  font-weight: 800;
-}
-.member-list > div > span:nth-child(2) {
-  display: grid;
-  gap: 2px;
-}
-.member-list small {
-  color: var(--muted);
-}
-.member-list i {
-  padding: 3px 7px;
-  margin-left: auto;
-  border-radius: 99px;
-  color: var(--green-deep);
-  background: var(--mint);
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 800;
-}
-.member-remove {
-  margin-left: auto;
-  color: var(--muted);
-}
-.member-remove:hover {
-  color: #b64c4c;
+.danger-zone {
+  border-color: #dfbcbc;
 }
 .form-section {
   background: var(--card);
@@ -1466,6 +1401,25 @@ input:focus-visible {
 }
 .wide-field {
   grid-column: 1 / -1;
+}
+.field-grid .check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.field-grid .check-row input[type="checkbox"] {
+  width: 17px;
+  min-height: 17px;
+  margin-top: 1px;
+  padding: 0;
+  accent-color: var(--green);
+}
+.check-row > span {
+  display: grid;
+  gap: 4px;
 }
 .toggle-row {
   display: flex;

@@ -1,9 +1,14 @@
 let csrf = document.cookie.match(/(?:^|; )health_csrf=([^;]*)/)?.[1] || "";
+const ingressMatch = location.pathname.match(
+  /^(.*\/api\/hassio_ingress\/[^/]+)/,
+);
+const appBase = ingressMatch?.[1] || "";
+export const apiUrl = (path: string) => `${appBase}/api${path}`;
 export async function api<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(apiUrl(path), {
     ...options,
     headers: {
       "Content-Type": "application/json",

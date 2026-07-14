@@ -85,12 +85,12 @@ const progress = {
 };
 let taskState = "available";
 let onboardingRequired = false;
-let mustChangePin = false;
+let haSetupRequired = false;
 beforeEach(() => {
   cleanup();
   taskState = "available";
   onboardingRequired = false;
-  mustChangePin = false;
+  haSetupRequired = false;
 });
 vi.stubGlobal(
   "fetch",
@@ -103,14 +103,14 @@ vi.stubGlobal(
       json: async () =>
         url.includes("auth/status")
           ? {
-              onboarding_required: onboardingRequired,
+              onboarding_required: onboardingRequired || haSetupRequired,
               pin_required: false,
               authenticated: !onboardingRequired,
-              profile: mustChangePin
+              auth_provider: haSetupRequired ? "home_assistant" : null,
+              profile: haSetupRequired
                 ? {
                     display_name: "Taylor",
-                    is_admin: false,
-                    must_change_pin: true,
+                    setup_required: true,
                   }
                 : null,
             }
@@ -147,38 +147,25 @@ test("shows first-time setup before the dashboard", async () => {
   expect(screen.queryByText("Allow Embedding")).not.toBeInTheDocument();
 });
 
-test("requires a household member to replace their temporary PIN", async () => {
-  mustChangePin = true;
+test("onboards a Home Assistant user without asking for a PIN", async () => {
+  haSetupRequired = true;
   render(
     <QueryClientProvider client={new QueryClient()}>
       <App />
     </QueryClientProvider>,
   );
   expect(
-    await screen.findByRole("heading", { name: "Set your timezone." }),
+    await screen.findByRole("heading", { name: "Let’s make this yours." }),
   ).toBeInTheDocument();
   expect(screen.getByLabelText("Timezone")).toBeInTheDocument();
-  expect(
-    screen.getByRole("option", {
-      name: /Chicago.*Central Time.*America\/Chicago/,
-    }),
-  ).toBeInTheDocument();
+  expect(screen.getByText(/We detected/)).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
   expect(
-    screen.getByRole("heading", { name: "Add your health baseline." }),
+    screen.getByRole("heading", { name: "Set gentle targets." }),
   ).toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText("Starting weight (kg)"), {
-    target: { value: "72" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: /Continue/ }));
-  expect(
-    screen.getByRole("heading", { name: "Choose your own PIN." }),
-  ).toBeInTheDocument();
-  expect(screen.getByLabelText("New PIN")).toBeInTheDocument();
-  expect(screen.getByLabelText("Confirm new PIN")).toBeInTheDocument();
+  expect(screen.queryByLabelText("PIN")).not.toBeInTheDocument();
   expect(screen.queryByText("Today’s tasks")).not.toBeInTheDocument();
 });
-
 test("adds water from the one-tap dashboard controls", async () => {
   render(
     <QueryClientProvider client={new QueryClient()}>

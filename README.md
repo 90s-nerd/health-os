@@ -1,26 +1,34 @@
 # Health OS
 
-Health OS is a calm, self-hosted health dashboard for individuals and households. Each household member gets a private PIN, timezone, plan, preferences, and health history. It works on phones, tablets, desktop browsers, and trusted embedded displays, emphasizing flexible routines and trend-based feedback without shame, calorie counting, analytics, or cloud dependencies.
+Health OS is a calm, self-hosted personal health dashboard for routines, hydration, weight, sleep, exercise, and progress. It is designed for quick daily check-ins, private per-user data, and encouraging feedback without shame, calorie counting, telemetry, or cloud dependencies.
 
-## What is included
+Health OS supports two deployment modes:
 
-- Mobile-first Today screen with one next-best action, optimistic one-tap check-ins, undo, intentional skip, minimum exercise versions, daily completion, weekly rhythm, and trend-aware weight context.
-- Weekend-aware Standard Day, Relaxed Friday, Relaxed Saturday, and Sunday Reset schedules.
-- Week grid, responsive progress charts, editable/pausable plan, settings, easy-meal suggestions, and JSON/CSV exports.
-- Weight, sleep, exercise, nutrition, hydration, caffeine, alcohol, reminders, external sensor mappings, callouts, settings, and audit persistence.
-- Deterministic callouts with a hard maximum of one highest-priority and two secondary items. Alcohol plus possible driving always becomes the top safety callout and never estimates BAC or says driving is safe.
-- Private household profiles distinguished by unique Argon2-hashed PINs, with admin-managed member creation and user-owned first-time setup.
-- HttpOnly/SameSite sessions, CSRF double-submit protection, configurable Secure cookies and expiry, and failed-login rate limiting.
-- Optional server-side external sensor adapter with connection testing and read-only discovery.
-- SQLite migrations, Docker health check, persistent volumes, security headers, local backups, and portable exports.
+- **Standalone:** each person signs in with a unique PIN. Accounts are independent; there is no household administrator or member-management screen.
+- **Home Assistant app:** Home Assistant Ingress signs each Home Assistant user into a separate Health OS account using their stable Home Assistant user ID. No PIN is required, although a user may add one for optional standalone access to the same account.
+
+Identity providers are never matched by display name. Linking another sign-in method is an explicit, authenticated action, so people with similar names cannot accidentally share health data.
+
+## Features
+
+- Mobile-first Today screen with one-tap task, water, weight, sleep, and exercise check-ins.
+- Intentional skip with undo, minimum exercise versions, editable plans, and time-sorted tasks.
+- Weight goals and trends, weekly rhythm, responsive charts, meals, exports, and local backups.
+- User-scoped timezone, caffeine cutoff, water target, reminder preferences, and quiet hours.
+- Temporary travel timezone with automatic expiry and an explicit permanent-timezone choice.
+- Durable UTC reminder schedules recalculated from each user's active timezone, including daylight-saving transitions.
+- HttpOnly/SameSite sessions, CSRF protection, Argon2 PIN hashes, login throttling, and strict Home Assistant proxy trust.
+- SQLite migrations that preserve existing profile IDs, PIN hashes, settings, and health history.
+
+Health OS provides lifestyle organization, not diagnosis or emergency care.
 
 ## Architecture
 
-`frontend/` is React 19 + TypeScript + Vite, TanStack Query, Lucide, and Recharts. `backend/` is FastAPI, Pydantic, SQLAlchemy, SQLite, and Argon2. FastAPI serves the compiled SPA and REST API at one origin. Business rules live in `backend/services.py`, independently of transport and storage configuration; `DATABASE_URL` can point to PostgreSQL after installing its driver.
+The frontend uses React, TypeScript, Vite, TanStack Query, Lucide, and Recharts. The backend uses FastAPI, Pydantic, SQLAlchemy, SQLite, and Argon2. FastAPI serves the compiled SPA and REST API at one origin. The schema uses normalized profiles and external identities so authentication is separate from user-owned health records.
 
-The schema is normalized around `app_profile`, `habits`, `habit_schedules`, `daily_tasks`, `task_completions`, `exercise_sessions`, `meal_checkins`, `hydration_entries`, `caffeine_entries`, `alcohol_entries`, `sleep_entries`, `weight_entries`, `callouts`, `callout_dismissals`, `settings`, `reminder_rules`, `external_entity_mappings`, and `audit_events`. Plan items are archived instead of erasing historical check-ins.
+All persisted instants are UTC. Each user has an IANA timezone such as `America/Chicago`; local-day boundaries, weekday schedules, and reminder times are calculated from that timezone. Completed tasks retain their original local date and timezone so later timezone changes do not rewrite history. During the spring DST gap, a nonexistent scheduled time advances to the next valid local minute; during the autumn overlap, the first occurrence is used.
 
-## Local development
+## Standalone development
 
 Python 3.12 and Node 22 are recommended.
 
@@ -32,119 +40,118 @@ alembic upgrade head
 uvicorn backend.main:app --reload --port 8000
 ```
 
-In a second terminal, from the repository root:
+In a second terminal:
 
 ```bash
 npm install
 npm run dev
 ```
 
-The root `package.json` is an npm workspace that installs and runs the frontend. Do not mix
-pnpm and npm in the same working tree; if switching package managers, remove existing
-`node_modules` directories first.
+Open `http://localhost:5173`; API docs are at `http://localhost:8000/docs`. The root npm workspace manages the frontend. Do not mix pnpm and npm in one working tree.
 
-Open `http://localhost:5173`. API docs are at `http://localhost:8000/docs`. To run the production build locally, build the frontend and start Uvicorn from the repository root; it will serve `frontend/dist`.
-
-## Docker deployment
-
-Copy the example environment file, choose host directories for persistent data and backups, and set a long random `SESSION_SECRET`:
+## Standalone Docker deployment
 
 ```bash
 cp .env.example .env
+# Replace SESSION_SECRET with a long random value.
 docker compose up -d --build
-docker compose logs -f health-os
 ```
 
-Open `http://localhost:8080` or replace `localhost` with the server's address. Data is stored in `/data/health-os.db` inside the container and in the host directory configured by `DATA_DIR`; backups use `BACKUP_HOST_DIR`. The startup command applies migrations before serving traffic.
+Open `http://localhost:8080`. Data is stored in the host directory selected by `DATA_DIR`; backups use `BACKUP_HOST_DIR`. Startup applies database migrations before serving traffic. The container runs as a non-root user. If a bind mount is not writable, grant the container write access using the normal ownership or ACL controls for your Docker/NAS platform; no application user ID is involved.
 
-The image runs as a non-root user for security. Most Docker installations handle this normally. If a Linux or NAS bind mount reports “permission denied” or a read-only database, make the configured data and backup directories writable by container UID `10001`.
+Standalone mode requires `SESSION_SECRET`. The first visitor creates a PIN account through the onboarding wizard. Additional people choose **Create private account** and receive completely independent data and preferences.
 
-## Login and setup behavior
+## Home Assistant app deployment
 
-The first visitor completes an onboarding wizard and becomes the household admin. The admin can create another member with only a name and temporary PIN. On first sign-in, that member chooses their timezone, baselines, targets, and private replacement PIN. All member data and preferences are isolated. Only the admin can manage household members and embedding permissions.
+Add this GitHub repository as a Home Assistant app repository, install **Health OS**, start it, and select **Open Web UI**. Packaging is in `home-assistant-app/config.yaml`; the repository metadata is in `repository.yaml`.
 
-Only Argon2 PIN hashes are stored in SQLite. “Keep me signed in” uses `KEEP_SIGNED_IN_DAYS`; otherwise sessions use `SESSION_TIMEOUT_MINUTES`. Set `SESSION_SECURE=true` when the app is served through HTTPS. Deployment secrets are intentionally never returned by `/api/settings`.
+The app:
 
-## Allow Embedding
+- uses Ingress and exposes no host port;
+- is available to non-admin Home Assistant users (`panel_admin: false`);
+- accepts identity headers only in Home Assistant deployment mode and only from the configured Supervisor proxy network;
+- keys accounts by stable Home Assistant user ID, while names remain informational;
+- stores its SQLite database and generated session secret under `/data`;
+- supports `amd64`, `aarch64`, and `armv7` images published to GHCR.
 
-Open Settings, enable **Allow Health OS to be embedded**, and enter the exact trusted origins that may frame it. This works with any dashboard, kiosk, portal, or local site that supports iframes—not one specific platform.
+Opening the container port directly is unsupported in Home Assistant mode because trusted Ingress identity headers are absent. Logging out clears the Health OS session; opening it again through Ingress signs the Home Assistant user back in. Removing a Health OS account deletes only that user's local Health OS data and does not change the Home Assistant account.
 
-Standard HTML example:
+Home Assistant notification delivery uses a user-configured `notify.*` target and the Supervisor Core API. A configured reminder is recorded as sent only after successful delivery. If Home Assistant or the target is unavailable, the failure is retained for retry/diagnostics rather than reported as delivered.
 
-```html
-<iframe src="http://health-os.local:8080/?embedded=true" title="Health OS"></iframe>
+## Timezone and travel behavior
+
+The browser timezone is offered during onboarding in a friendly searchable dropdown, but the user confirms it. Settings show the active timezone and can warn when the browser and saved timezone differ. The user can keep the saved zone, switch permanently, or use the browser zone temporarily for seven days. Temporary travel mode automatically expires and reminder UTC schedules are recalculated without changing historical local dates.
+
+Wake and sleep task times remain editable plan entries rather than duplicated global settings. Friday and Saturday reminder behavior and cross-midnight quiet hours are user scoped.
+
+For example, the same local reminder remains personal even when users share one server:
+
+```text
+User 1
+Health OS timezone: America/Chicago
+Water reminder: 10:00 AM Central
+
+User 2
+Health OS timezone: America/Phoenix
+Water reminder: 10:00 AM Arizona time
 ```
-
-Dashboard systems that use iframe-card YAML can use:
-
-```yaml
-type: iframe
-url: http://health-os.local:8080/?embedded=true
-aspect_ratio: 100%
-```
-
-`?embedded=true` uses compact top spacing and the mobile bottom navigation. Safe-area padding supports notched iPhones. The content security policy keeps other protections enabled while allowing only the origins saved in Settings.
-
-Browsers block an HTTP iframe when its parent dashboard is loaded through HTTPS (mixed content). Prefer serving both through compatible HTTPS endpoints—often via the same trusted reverse proxy—or access both consistently through trusted local HTTP URLs. If the frame is blank, inspect the browser console and verify that the parent origin, including scheme and port, exactly matches an origin saved under Allow Embedding.
-
-## Optional external sensor integration
-
-Health OS includes an optional server-side adapter for compatible home-automation sensor APIs. It is separate from embedding and is not needed to use the application. Tokens stay on the backend, sensor access is read-only, and Health OS does not create entities or modify external configuration.
 
 ## Backup, restore, and export
 
-Create a backup with `python scripts/backup.py` or `POST /api/backup`. Retention is controlled by `BACKUP_RETENTION_DAYS`. For a daily backup, schedule this command with the NAS scheduler or cron against the running container:
+Create a backup with `python scripts/backup.py` or `POST /api/backup`. Retention is controlled by `BACKUP_RETENTION_DAYS`. For a running standalone container:
 
 ```bash
 docker exec health-os python /app/scripts/backup.py
 ```
 
-To restore: stop the container, copy a chosen backup to `${DATA_DIR}/health-os.db`, ensure the container can write the restored file, and restart. Never replace SQLite while the app is running. Settings links export JSON or CSV for weight, sleep, exercise, and completions; API routes are `/api/export/json` and `/api/export/{weight|sleep|exercise|habits}.csv`.
+To restore, stop the container, replace the SQLite file, make it writable by the container, and restart. Never replace SQLite while the app is running. Settings downloads JSON and CSV exports for the authenticated user only.
 
-## Environment variables
+## Configuration
 
-| Variable | Purpose | Default |
+| Variable | Purpose | Standalone default |
 |---|---|---|
-| `DATABASE_URL` | SQLAlchemy database URL | `sqlite:////data/health-os.db` in Compose |
-| `TZ` / `TIMEZONE` | Local schedule timezone | `America/Chicago` |
-| `SESSION_SECRET` | Cookie signing secret | required by Compose |
-| `SESSION_SECURE` | HTTPS-only cookie | `false` |
+| `DEPLOYMENT_MODE` | `standalone` or `home_assistant` | `standalone` |
+| `AUTH_MODE` | `pin`, `home_assistant`, or `auto` | `pin` |
+| `DATABASE_URL` | SQLAlchemy database URL | Compose uses `/data/health-os.db` |
+| `DEFAULT_TIMEZONE` | Onboarding fallback IANA timezone | `America/Chicago` |
+| `SESSION_SECRET` | Cookie signing secret | required for standalone startup |
+| `SESSION_SECURE` | HTTPS-only session cookies | `false` |
 | `SESSION_TIMEOUT_MINUTES` | Standard session duration | `120` |
-| `KEEP_SIGNED_IN_DAYS` | Remembered session duration | `30` |
-| `FRAME_ANCESTORS` | First-run allowed iframe origins; editable in Settings | empty |
-| `EMBEDDED_MODE` | Compact embedded default | `false` |
+| `KEEP_SIGNED_IN_DAYS` | Remembered PIN-session duration | `30` |
+| `HA_TRUSTED_PROXIES` | Networks allowed to assert HA identity | `172.30.32.2/32` |
+| `FRAME_ANCESTORS` | Optional trusted iframe origins | empty |
 | `BACKUP_DIR`, `BACKUP_RETENTION_DAYS` | Backup destination and retention | `/backups`, `14` |
-| `PHOTO_UPLOADS_ENABLED` | Locally stored meal photos | `false` |
-| `INTEGRATION_ENABLED`, `INTEGRATION_BASE_URL`, `INTEGRATION_TOKEN`, `INTEGRATION_VERIFY_SSL` | Optional external sensor API | disabled |
+
+`SUPERVISOR_TOKEN` is injected by Home Assistant when `homeassistant_api: true`; do not configure or expose it manually. Deployment secrets are never returned from the settings API.
 
 ## Security and privacy
 
-There is no telemetry, analytics, CDN, remote font, or external API requirement. Run Health OS only on a trusted home network or behind an authenticated HTTPS reverse proxy. Use a strong unique PIN and session secret; do not commit `.env`. `FRAME_ANCESTORS` is deliberately scoped rather than disabling frame protection globally. X-Content-Type-Options, Referrer-Policy, Permissions-Policy, CSP, HttpOnly cookies, CSRF checks, validation, structured logs, and login throttling are enabled.
+There is no telemetry, analytics, CDN, or remote font requirement. Standalone deployments should stay on a trusted network or behind an authenticated HTTPS reverse proxy. Home Assistant identity headers received from ordinary clients are ignored, including in standalone mode. A trusted Home Assistant identity creates or resumes only the account associated with its stable external subject.
 
-## Testing and mobile QA
+PINs are unique only among PIN-enabled identities and are stored as Argon2 hashes. Authentication errors are intentionally generic. User settings, exports, tasks, completion history, reminders, notification target, and timezone are scoped to the authenticated profile.
+
+## Testing
 
 ```bash
-ruff check backend tests scripts
+ruff check backend tests scripts migrations
 pytest
 cd frontend
 npm run lint
-npm test
+npm test -- --run
 npm run build
 docker build -t health-os .
 ```
 
-Test narrow and wide iPhone sizes, iPad portrait/landscape, desktop light/dark themes, reduced motion, keyboard navigation, VoiceOver task states, and both standalone and `?embedded=true` routes. Charts include screen-reader summaries and empty states.
+The automated suite covers standalone and Home Assistant identity isolation, spoofed-header rejection, onboarding, PIN linking, timezone day boundaries, Sunday schedules, travel expiry, DST gaps/overlaps, quiet hours, idempotent task completion, preserved historical dates, and durable notification delivery.
 
 ## Troubleshooting
 
-- **Database is read-only:** ensure the mounted data and backup directories are writable by UID 10001.
-- **Container is unhealthy:** check `docker compose logs`; verify migration access and `/api/health`.
-- **Login loops over HTTPS:** set `SESSION_SECURE=true` and ensure the proxy forwards cookies without rewriting SameSite.
-- **External sensor connection fails:** verify the base URL is reachable from the container and the server-side token and TLS settings are correct.
-- **DST/time looks wrong:** keep `TZ`/`TIMEZONE` at `America/Chicago`; schedules use IANA timezone rules, including daylight-saving transitions.
-
-Health OS provides lifestyle organization, not diagnosis or emergency care. Safety callouts intentionally recommend conservative choices without claiming medical certainty.
+- **Database is read-only:** grant the container write permission to the configured data and backup directories using your host platform's ownership or ACL tools.
+- **Standalone startup rejects the secret:** set a long non-default `SESSION_SECRET` in `.env`.
+- **Home Assistant shows an identity error:** open Health OS through Ingress, not by addressing the container directly.
+- **Login loops over standalone HTTPS:** set `SESSION_SECURE=true` and ensure the reverse proxy preserves cookies.
+- **DST/time looks wrong:** select the user's actual IANA timezone in Settings; `TZ` is not a substitute for per-user timezone configuration.
 
 ## License
 
-Health OS is available under the [MIT License](LICENSE). You may use, copy, modify, publish, distribute, sublicense, sell, or fork it subject to the license notice.
+Health OS is released under the [MIT License](LICENSE). You may use, copy, modify, publish, distribute, sublicense, sell, or fork it subject to the license notice.

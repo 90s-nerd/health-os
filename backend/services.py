@@ -1,7 +1,6 @@
 import json
 from datetime import date, datetime, timedelta
 from statistics import mean
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -20,6 +19,7 @@ from .models import (
     UserSetting,
     WeightEntry,
 )
+from .time_service import UserClock
 
 MODES = {
     0: ("Standard Day", "A steady start to the week."),
@@ -226,14 +226,22 @@ USER_DEFAULTS = {
     "caffeine_cutoff": "14:00",
     "weight_milestones": "94,90,88,85",
     "water_target_ml": "2000",
+    "notification_target": "",
+    "quiet_hours_start": "22:30",
+    "quiet_hours_end": "07:00",
+    "timezone_mismatch_alerts": "true",
+    "friday_reminders": "gentle",
+    "saturday_reminders": "gentle",
+    "reminders_paused": "false",
+    "urgent_bypasses_quiet_hours": "false",
 }
 
 
 def current_profile(db: Session) -> Profile:
     profile_id = db.info.get("profile_id")
-    profile = db.get(Profile, profile_id) if profile_id else db.scalar(select(Profile))
+    profile = db.get(Profile, profile_id) if profile_id else None
     if not profile:
-        raise RuntimeError("No household profile is available")
+        raise RuntimeError("No authenticated Health OS user is available")
     return profile
 
 
@@ -278,17 +286,6 @@ def seed_profile(db: Session, profile: Profile) -> None:
 
 
 def seed(db: Session) -> None:
-    profile = db.scalar(select(Profile).order_by(Profile.id))
-    if not profile:
-        profile = Profile(
-            display_name="Household admin",
-            timezone=get_config().timezone,
-            is_admin=True,
-            onboarding_completed=False,
-        )
-        db.add(profile)
-        db.flush()
-    seed_profile(db, profile)
     defaults = {
         "allow_embedding": "true" if get_config().frame_ancestors.strip() else "false",
         "embedding_origins": get_config().frame_ancestors.replace("'self'", "").strip(),
@@ -300,12 +297,11 @@ def seed(db: Session) -> None:
 
 
 def app_timezone(db: Session) -> str:
-    profile = current_profile(db)
-    return profile.timezone if profile else get_config().timezone
+    return UserClock(current_profile(db)).timezone_name
 
 
 def local_today(db: Session) -> date:
-    return datetime.now(ZoneInfo(app_timezone(db))).date()
+    return UserClock(current_profile(db)).local_date()
 
 
 def mode_for(day: date) -> dict:
@@ -377,7 +373,9 @@ def completion_score(tasks: list[dict]) -> int:
     return round(100 * completed / len(eligible))
 
 
-def next_action(tasks: list[dict], day: date, sleep_short: bool = False) -> dict:
+def next_action(
+    tasks: list[dict], day: date, sleep_short: bool = False, now_local: datetime | None = None
+) -> dict:
     if sleep_short:
         return {
             "title": "Keep today gentle",
@@ -394,7 +392,7 @@ def next_action(tasks: list[dict], day: date, sleep_short: bool = False) -> dict
                 (x["id"] for x in tasks if x["key"] == "water" and x["state"] != "completed"), None
             ),
         }
-    if day.weekday() == 4 and datetime.now().hour >= 18:
+    if day.weekday() == 4 and now_local and now_local.hour >= 18:
         return {
             "title": "Enjoy your flexible evening",
             "message": "Have some water before bed, and choose a sober ride if you drink.",

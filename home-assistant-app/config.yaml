@@ -1,0 +1,30 @@
+name: Health OS
+version: "1.0.0"
+slug: health_os
+description: Private, per-user health routines and progress through Home Assistant Ingress
+url: https://github.com/90s-nerd/health-os
+image: ghcr.io/90s-nerd/health-os
+arch:
+  - amd64
+  - aarch64
+  - armv7
+ingress: true
+ingress_port: 8080
+ingress_stream: true
+panel_icon: mdi:heart-pulse
+panel_title: Health OS
+panel_admin: false
+homeassistant_api: true
+startup: application
+boot: auto
+init: false
+stage: experimental
+environment:
+  DEPLOYMENT_MODE: home_assistant
+  AUTH_MODE: home_assistant
+  DATABASE_URL: sqlite:////data/health-os.db
+  BACKUP_DIR: /data/backups
+  HA_TRUSTED_PROXIES: 172.30.32.2/32
+  SUPERVISOR_API_URL: http://supervisor/core
+options: {}
+schema: {}

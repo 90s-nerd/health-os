@@ -1,4 +1,4 @@
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 
 from sqlalchemy import (
     Boolean,
@@ -15,7 +15,7 @@ from .database import Base
 
 
 def now() -> datetime:
-    return datetime.now().astimezone()
+    return datetime.now(UTC)
 
 
 class Profile(Base):
@@ -23,6 +23,10 @@ class Profile(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     display_name: Mapped[str] = mapped_column(default="John")
     timezone: Mapped[str] = mapped_column(default="America/Chicago")
+    timezone_source: Mapped[str] = mapped_column(default="default")
+    timezone_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    temporary_timezone: Mapped[str | None]
+    temporary_timezone_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     height_cm: Mapped[float] = mapped_column(default=183)
     starting_weight_kg: Mapped[float] = mapped_column(default=99)
     pin_hash: Mapped[str | None]
@@ -30,6 +34,20 @@ class Profile(Base):
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     must_change_pin: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class UserIdentity(Base):
+    __tablename__ = "user_identities"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("app_profile.id"), index=True)
+    provider: Mapped[str] = mapped_column(index=True)
+    provider_subject: Mapped[str]
+    provider_username: Mapped[str | None]
+    provider_display_name: Mapped[str | None]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("provider", "provider_subject"),)
 
 
 class Habit(Base):
@@ -81,6 +99,8 @@ class TaskCompletion(Base):
     numeric_value: Mapped[float | None]
     notes: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    user_local_date: Mapped[date | None] = mapped_column(Date)
+    timezone_at_completion: Mapped[str | None]
 
 
 class ExerciseSession(Base):
@@ -218,6 +238,15 @@ class ReminderRule(Base):
     quiet_start: Mapped[time | None] = mapped_column(Time)
     quiet_end: Mapped[time | None] = mapped_column(Time)
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    local_time: Mapped[time | None] = mapped_column(Time)
+    days_of_week: Mapped[str] = mapped_column(default="0,1,2,3,4,5,6")
+    timezone_behavior: Mapped[str] = mapped_column(default="follow_user_timezone")
+    fixed_timezone: Mapped[str | None]
+    urgent_bypasses_quiet_hours: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_sent_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_run_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     __table_args__ = (UniqueConstraint("profile_id", "key"),)
 
 
@@ -239,3 +268,15 @@ class AuditEvent(Base):
     entity_id: Mapped[str | None]
     details: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class NotificationDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rule_id: Mapped[int] = mapped_column(ForeignKey("reminder_rules.id"), index=True)
+    profile_id: Mapped[int] = mapped_column(ForeignKey("app_profile.id"), index=True)
+    scheduled_for_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempted_at_utc: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(default="pending")
+    error: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (UniqueConstraint("rule_id", "scheduled_for_utc"),)

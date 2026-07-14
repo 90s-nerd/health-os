@@ -20,10 +20,13 @@ from sqlalchemy.orm import Session
 from . import models, schemas
 from .auth import (
     active_pin_hash,
+    auth_mode,
     check_rate_limit,
     csrf_token,
+    ensure_pin_identity,
     hash_pin,
     pin_is_available,
+    profile_for_home_assistant,
     profile_for_pin,
     record_failure,
     require_session,
@@ -32,6 +35,11 @@ from .auth import (
 )
 from .config import get_config
 from .database import Base, db_session, engine
+from .notifications import (
+    HomeAssistantNotificationSender,
+    process_due_reminders,
+    recalculate_user_reminders,
+)
 from .services import (
     app_timezone,
     audit,
@@ -48,6 +56,7 @@ from .services import (
     user_setting,
     weight_series,
 )
+from .time_service import UserClock, utc_now
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,6 +83,11 @@ def create_backup() -> Path | None:
     return target
 
 
+def process_notifications() -> None:
+    with Session(engine) as db:
+        process_due_reminders(db, HomeAssistantNotificationSender())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(engine)
@@ -83,6 +97,14 @@ async def lifespan(app: FastAPI):
     scheduler = BackgroundScheduler(timezone=cfg.timezone)
     scheduler.add_job(
         create_backup, "cron", hour=3, minute=15, id="daily-backup", replace_existing=True
+    )
+    scheduler.add_job(
+        process_notifications,
+        "interval",
+        minutes=1,
+        id="notification-worker",
+        replace_existing=True,
+        max_instances=1,
     )
     scheduler.start()
     yield
@@ -105,32 +127,41 @@ async def security(request: Request, call_next):
         "/api/auth/status",
         "/api/auth/login",
         "/api/onboarding",
+        "/api/onboarding/home-assistant",
+        "/api/accounts",
     )
-    if request.url.path.startswith("/api/") and request.url.path not in public_paths:
+    ha_profile = None
+    if request.url.path.startswith("/api/") and request.url.path != "/api/health":
         with Session(engine) as db:
-            payload = require_session(request, True)
-            profile = db.get(models.Profile, payload.get("profile_id")) if payload else None
-            if not profile or not profile.onboarding_completed:
+            try:
+                ha_profile = profile_for_home_assistant(request, db)
+            except HTTPException as exc:
                 return JSONResponse(
-                    {"error": {"code": 401, "message": "Sign in to continue"}},
-                    status_code=401,
+                    {"error": {"code": exc.status_code, "message": exc.detail}},
+                    status_code=exc.status_code,
                 )
-            if profile.must_change_pin and request.url.path not in (
-                "/api/household/complete-setup",
-                "/api/auth/logout",
-            ):
-                return JSONResponse(
-                    {
-                        "error": {
-                            "code": 403,
-                            "message": "Complete first-time setup to continue",
-                        }
-                    },
-                    status_code=403,
-                )
-            request.state.profile_id = profile.id
-            request.state.is_admin = profile.is_admin
+            if ha_profile:
+                request.state.profile_id = ha_profile.id
+                request.state.auth_provider = "home_assistant"
+            elif request.url.path not in public_paths:
+                try:
+                    payload = require_session(request, True)
+                except HTTPException as exc:
+                    return JSONResponse(
+                        {"error": {"code": exc.status_code, "message": exc.detail}},
+                        status_code=exc.status_code,
+                    )
+                profile = db.get(models.Profile, payload.get("profile_id")) if payload else None
+                if not profile or not profile.onboarding_completed:
+                    return JSONResponse(
+                        {"error": {"code": 401, "message": "Sign in to continue"}},
+                        status_code=401,
+                    )
+                request.state.profile_id = profile.id
+                request.state.auth_provider = "pin"
     response = await call_next(request)
+    if ha_profile:
+        set_session_cookies(response, ha_profile)
     with Session(engine) as db:
         allow_embedding = db.get(models.Setting, "allow_embedding")
         origins = db.get(models.Setting, "embedding_origins")
@@ -172,28 +203,36 @@ def auth_status(request: Request, db: Session = Depends(db_session)):
     configured_profiles = list(
         db.scalars(select(models.Profile).where(models.Profile.onboarding_completed.is_(True)))
     )
-    authenticated = False
-    profile = None
-    if request.cookies.get("health_session"):
+    state_profile_id = getattr(request.state, "profile_id", None)
+    profile = db.get(models.Profile, state_profile_id) if state_profile_id else None
+    provider = getattr(request.state, "auth_provider", None)
+    if not profile and request.cookies.get("health_session"):
         try:
             payload = serializer().loads(
                 request.cookies["health_session"], max_age=cfg.keep_signed_in_days * 86400
             )
             profile = db.get(models.Profile, payload.get("profile_id"))
-            authenticated = bool(profile and profile.onboarding_completed)
+            provider = "pin"
         except Exception:
             pass
+    authenticated = bool(profile)
+    mode = auth_mode()
     return {
-        "onboarding_required": not configured_profiles,
-        "pin_required": bool(configured_profiles),
+        "onboarding_required": bool(
+            profile and not profile.onboarding_completed
+            or not profile and not configured_profiles and mode != "home_assistant"
+        ),
+        "pin_required": mode in {"pin", "auto"} and bool(configured_profiles),
+        "registration_available": mode in {"pin", "auto"},
+        "auth_mode": mode,
+        "auth_provider": provider,
         "authenticated": authenticated,
         "csrf_token": request.cookies.get("health_csrf"),
         "profile": (
             {
                 "id": profile.id,
                 "display_name": profile.display_name,
-                "is_admin": profile.is_admin,
-                "must_change_pin": profile.must_change_pin,
+                "setup_required": not profile.onboarding_completed,
             }
             if authenticated and profile
             else None
@@ -233,24 +272,26 @@ def onboarding(
     response: Response,
     db: Session = Depends(db_session),
 ):
-    if db.scalar(select(models.Profile.id).where(models.Profile.onboarding_completed.is_(True))):
-        raise HTTPException(409, "Household setup is already complete")
+    if auth_mode() == "home_assistant":
+        raise HTTPException(404, "PIN account creation is unavailable in this deployment")
     if not pin_is_available(db, body.pin):
         raise HTTPException(409, "Choose a different PIN")
-    profile = db.scalar(select(models.Profile).order_by(models.Profile.id))
-    if not profile:
-        profile = models.Profile()
-        db.add(profile)
-        db.flush()
-    profile.display_name = body.display_name.strip()
-    profile.pin_hash = hash_pin(body.pin)
-    profile.timezone = body.timezone
-    profile.starting_weight_kg = body.starting_weight_kg
+    profile = models.Profile(
+        display_name=body.display_name.strip(),
+        pin_hash=hash_pin(body.pin),
+        timezone=body.timezone,
+        timezone_source="browser_detected",
+        timezone_confirmed_at=utc_now(),
+        starting_weight_kg=body.starting_weight_kg,
+        is_admin=False,
+        onboarding_completed=True,
+        must_change_pin=False,
+    )
+    db.add(profile)
+    db.flush()
     if body.height_cm is not None:
         profile.height_cm = body.height_cm
-    profile.is_admin = True
-    profile.onboarding_completed = True
-    profile.must_change_pin = False
+    ensure_pin_identity(db, profile)
     seed_profile(db, profile)
     water = db.get(models.UserSetting, (profile.id, "water_target_ml"))
     water.value = str(body.water_target_ml)
@@ -258,8 +299,43 @@ def onboarding(
     return {
         "authenticated": True,
         "csrf_token": set_session_cookies(response, profile),
-        "profile": {"display_name": profile.display_name, "is_admin": True},
+        "profile": {"display_name": profile.display_name},
     }
+
+
+@app.post("/api/accounts", status_code=201)
+def create_account(
+    body: schemas.OnboardingIn,
+    response: Response,
+    db: Session = Depends(db_session),
+):
+    return onboarding(body, response, db)
+
+
+@app.post("/api/onboarding/home-assistant")
+def home_assistant_onboarding(
+    body: schemas.HomeAssistantOnboardingIn,
+    request: Request,
+    db: Session = Depends(db_session),
+):
+    if getattr(request.state, "auth_provider", None) != "home_assistant":
+        raise HTTPException(403, "Home Assistant authentication is required")
+    profile = db.get(models.Profile, db.info.get("profile_id"))
+    if not profile:
+        raise HTTPException(401, "Sign in to continue")
+    profile.display_name = body.display_name.strip()
+    profile.timezone = body.timezone
+    profile.timezone_source = "browser_detected"
+    profile.timezone_confirmed_at = utc_now()
+    profile.starting_weight_kg = body.starting_weight_kg
+    if body.height_cm is not None:
+        profile.height_cm = body.height_cm
+    profile.onboarding_completed = True
+    seed_profile(db, profile)
+    water = db.get(models.UserSetting, (profile.id, "water_target_ml"))
+    water.value = str(body.water_target_ml)
+    db.commit()
+    return {"ok": True, "message": "Your private Health OS space is ready"}
 
 
 @app.post("/api/auth/login")
@@ -276,14 +352,16 @@ def login(
         record_failure(ip)
         raise HTTPException(401, "Incorrect PIN")
     csrf = set_session_cookies(response, profile, body.keep_signed_in)
+    identity = ensure_pin_identity(db, profile)
+    identity.last_login_at = utc_now()
+    db.commit()
     return {
         "authenticated": True,
         "csrf_token": csrf,
         "profile": {
             "id": profile.id,
             "display_name": profile.display_name,
-            "is_admin": profile.is_admin,
-            "must_change_pin": profile.must_change_pin,
+            "setup_required": not profile.onboarding_completed,
         },
     }
 
@@ -302,8 +380,6 @@ def change_pin(
     db: Session = Depends(db_session),
 ):
     profile = db.get(models.Profile, db.info.get("profile_id"))
-    if profile.must_change_pin:
-        raise HTTPException(409, "Complete first-time setup before changing your PIN")
     current_hash = active_pin_hash(db)
     if (
         current_hash
@@ -314,6 +390,7 @@ def change_pin(
         raise HTTPException(409, "We couldn't save that PIN. Try a different one")
     profile.pin_hash = hash_pin(body.new_pin)
     profile.must_change_pin = False
+    ensure_pin_identity(db, profile)
     audit(db, "update", "app_profile", profile.id, {"field": "pin_hash"})
     db.commit()
     csrf = set_session_cookies(response, profile)
@@ -322,7 +399,8 @@ def change_pin(
 
 def dashboard_for(db: Session, day: date):
     profile = current_profile(db)
-    now_local = datetime.now(ZoneInfo(app_timezone(db)))
+    clock = UserClock(profile)
+    now_local = clock.now()
     tasks = [task_dict(db, x, now_local) for x in ensure_tasks(db, day)]
     latest_weight = db.scalar(
         select(models.WeightEntry)
@@ -366,8 +444,8 @@ def dashboard_for(db: Session, day: date):
         if week_required
         else completion_score(tasks)
     )
-    start_of_day = datetime.combine(day, datetime.min.time(), ZoneInfo(profile.timezone))
-    end_of_day = start_of_day + timedelta(days=1)
+    start_of_day = clock.start_of_day_utc(day)
+    end_of_day = clock.end_of_day_utc(day)
     water_total = db.scalar(
         select(func.coalesce(func.sum(models.HydrationEntry.amount_ml), 0)).where(
             models.HydrationEntry.profile_id == profile.id,
@@ -417,7 +495,10 @@ def dashboard_for(db: Session, day: date):
             "latest_amount_ml": latest_water.amount_ml if latest_water else None,
         },
         "next_action": next_action(
-            tasks, day, bool(recent_sleep and recent_sleep.minutes_asleep < 360)
+            tasks,
+            day,
+            bool(recent_sleep and recent_sleep.minutes_asleep < 360),
+            now_local,
         ),
         "tasks": tasks,
         "callouts": generated_callouts(db, day),
@@ -435,10 +516,11 @@ def week(anchor: date | None = None, db: Session = Depends(db_session)):
     anchor = anchor or local_today(db)
     start = anchor - timedelta(days=anchor.weekday())
     days = []
+    now_local = UserClock(current_profile(db)).now()
     for offset in range(7):
         current = start + timedelta(days=offset)
         tasks = [
-            task_dict(db, x, datetime.now(ZoneInfo(app_timezone(db))))
+            task_dict(db, x, now_local)
             for x in ensure_tasks(db, current)
         ]
         cats = {
@@ -637,7 +719,7 @@ def archive_habit(habit_id: int, db: Session = Depends(db_session)):
     habit = db.get(models.Habit, habit_id)
     if not habit or habit.profile_id != profile.id or habit.archived_at:
         raise HTTPException(404, "Habit not found")
-    habit.archived_at = datetime.now().astimezone()
+    habit.archived_at = utc_now()
     audit(db, "archive", "habit", habit_id)
     db.commit()
     return {"ok": True}
@@ -678,7 +760,9 @@ def complete_task(task_id: int, body: schemas.TaskAction, db: Session = Depends(
     entry.minimum_version = body.minimum_version
     entry.numeric_value = body.numeric_value
     entry.notes = body.notes
-    entry.completed_at = datetime.now().astimezone()
+    entry.completed_at = utc_now()
+    entry.user_local_date = task.task_date
+    entry.timezone_at_completion = UserClock(profile).timezone_name
     audit(db, "complete", "task", task_id, body.model_dump())
     db.commit()
     return {"ok": True, "state": "completed", "minimum_version": entry.minimum_version}
@@ -698,6 +782,8 @@ def skip_task(task_id: int, db: Session = Depends(db_session)):
         select(models.TaskCompletion).where(models.TaskCompletion.daily_task_id == task_id)
     ) or models.TaskCompletion(daily_task_id=task_id)
     entry.state = "skipped"
+    entry.user_local_date = task.task_date
+    entry.timezone_at_completion = UserClock(profile).timezone_name
     db.add(entry)
     audit(db, "skip", "task", task_id)
     db.commit()
@@ -745,8 +831,8 @@ def exercise(body: schemas.ExerciseIn, db: Session = Depends(db_session)):
     entry = models.ExerciseSession(
         profile_id=profile.id,
         **body.model_dump(),
-        started_at=datetime.now().astimezone(),
-        completed_at=datetime.now().astimezone() if body.status == "completed" else None,
+        started_at=utc_now(),
+        completed_at=utc_now() if body.status == "completed" else None,
     )
     db.add(entry)
     db.commit()
@@ -859,7 +945,7 @@ def meal(body: schemas.MealIn, db: Session = Depends(db_session)):
 
 @app.get("/api/meals/suggestion")
 def meal_suggestion(meal: str | None = None, db: Session = Depends(db_session)):
-    hour = datetime.now(ZoneInfo(app_timezone(db))).hour
+    hour = UserClock(current_profile(db)).now().hour
     meal = meal or ("breakfast" if hour < 11 else "lunch" if hour < 16 else "dinner")
     options = {
         "breakfast": ["Greek yogurt, berries, and nuts", "Protein shake and banana"],
@@ -905,12 +991,16 @@ def settings(db: Session = Depends(db_session)):
         for value in values.get("weight_milestones", "94,90,88,85").split(",")
         if value.strip()
     ]
-    global_origins = db.get(models.Setting, "embedding_origins")
-    origins = [
-        value
-        for value in (global_origins.value if global_origins else "").split()
-        if value and value != "'self'"
-    ]
+    identities = list(
+        db.scalars(
+            select(models.UserIdentity).where(models.UserIdentity.user_id == profile.id)
+        )
+    )
+    ha_identity = next(
+        (identity for identity in identities if identity.provider == "home_assistant"), None
+    )
+    clock = UserClock(profile)
+    travel_active = clock.timezone_name != profile.timezone
     return {
         "display_name": profile.display_name,
         "starting_weight_kg": profile.starting_weight_kg,
@@ -918,14 +1008,32 @@ def settings(db: Session = Depends(db_session)):
         "caffeine_cutoff": values.get("caffeine_cutoff", "14:00"),
         "water_target_ml": int(values.get("water_target_ml", "2000")),
         "weight_milestones": milestones,
-        "allow_embedding": (
-            db.get(models.Setting, "allow_embedding").value.lower() == "true"
-            if profile.is_admin and db.get(models.Setting, "allow_embedding")
-            else False
+        "notification_target": values.get("notification_target", ""),
+        "quiet_hours_start": values.get("quiet_hours_start", "22:30"),
+        "quiet_hours_end": values.get("quiet_hours_end", "07:00"),
+        "timezone_mismatch_alerts": values.get("timezone_mismatch_alerts", "true")
+        == "true",
+        "friday_reminders": values.get("friday_reminders", "gentle"),
+        "saturday_reminders": values.get("saturday_reminders", "gentle"),
+        "reminders_paused": values.get("reminders_paused", "false") == "true",
+        "urgent_bypasses_quiet_hours": values.get(
+            "urgent_bypasses_quiet_hours", "false"
+        )
+        == "true",
+        "active_timezone": clock.timezone_name,
+        "temporary_timezone": profile.temporary_timezone if travel_active else None,
+        "temporary_timezone_expires_at": (
+            profile.temporary_timezone_expires_at.isoformat()
+            if travel_active and profile.temporary_timezone_expires_at
+            else None
         ),
-        "embedding_origins": origins if profile.is_admin else [],
-        "is_admin": profile.is_admin,
-        "pin_configured": bool(active_pin_hash(db)),
+        "timezone_source": profile.timezone_source,
+        "timezone_confirmed": bool(profile.timezone_confirmed_at),
+        "pin_configured": bool(profile.pin_hash),
+        "sign_in_methods": [identity.provider for identity in identities],
+        "home_assistant_display_name": (
+            ha_identity.provider_display_name if ha_identity else None
+        ),
         "photo_uploads_enabled": cfg.photo_uploads_enabled,
     }
 
@@ -936,11 +1044,31 @@ def save_settings(body: schemas.AppSettingsIn, db: Session = Depends(db_session)
     profile.display_name = body.display_name.strip()
     if body.starting_weight_kg is not None:
         profile.starting_weight_kg = body.starting_weight_kg
-    profile.timezone = body.timezone
+    if profile.timezone != body.timezone or not profile.timezone_confirmed_at:
+        profile.timezone = body.timezone
+        profile.timezone_source = "user_selected"
+        profile.timezone_confirmed_at = utc_now()
+        profile.temporary_timezone = None
+        profile.temporary_timezone_expires_at = None
+        recalculate_user_reminders(db, profile)
     values = {
         "caffeine_cutoff": body.caffeine_cutoff.strftime("%H:%M"),
         "water_target_ml": str(body.water_target_ml),
         "weight_milestones": ",".join(f"{value:g}" for value in body.weight_milestones),
+        "notification_target": body.notification_target.strip(),
+        "quiet_hours_start": (
+            body.quiet_hours_start.strftime("%H:%M") if body.quiet_hours_start else ""
+        ),
+        "quiet_hours_end": (
+            body.quiet_hours_end.strftime("%H:%M") if body.quiet_hours_end else ""
+        ),
+        "timezone_mismatch_alerts": str(body.timezone_mismatch_alerts).lower(),
+        "friday_reminders": body.friday_reminders,
+        "saturday_reminders": body.saturday_reminders,
+        "reminders_paused": str(body.reminders_paused).lower(),
+        "urgent_bypasses_quiet_hours": str(
+            body.urgent_bypasses_quiet_hours
+        ).lower(),
     }
     for key, value in values.items():
         item = db.get(models.UserSetting, (profile.id, key)) or models.UserSetting(
@@ -948,90 +1076,70 @@ def save_settings(body: schemas.AppSettingsIn, db: Session = Depends(db_session)
         )
         item.value = value
         db.add(item)
-    if profile.is_admin:
-        for key, value in {
-            "allow_embedding": str(body.allow_embedding).lower(),
-            "embedding_origins": " ".join(body.embedding_origins),
-        }.items():
-            item = db.get(models.Setting, key) or models.Setting(key=key, value="")
-            item.value = value
-            db.add(item)
+    recalculate_user_reminders(db, profile)
     audit(db, "update", "settings", None, {"keys": list(values)})
     db.commit()
     return {"ok": True, "message": "Settings saved"}
 
 
-@app.get("/api/household")
-def household(db: Session = Depends(db_session)):
-    profile = current_profile(db)
-    if not profile.is_admin:
-        raise HTTPException(403, "Only the household admin can manage members")
-    return [
-        {
-            "id": member.id,
-            "display_name": member.display_name,
-            "timezone": member.timezone,
-            "is_admin": member.is_admin,
-            "must_change_pin": member.must_change_pin,
-        }
-        for member in db.scalars(
-            select(models.Profile)
-            .where(models.Profile.onboarding_completed.is_(True))
-            .order_by(models.Profile.created_at)
-        )
-    ]
-
-
-@app.post("/api/household", status_code=201)
-def add_household_member(
-    body: schemas.HouseholdMemberIn,
-    db: Session = Depends(db_session),
+@app.put("/api/timezone/travel")
+def enable_travel_timezone(
+    body: schemas.TravelTimezoneIn, db: Session = Depends(db_session)
 ):
-    admin = current_profile(db)
-    if not admin.is_admin:
-        raise HTTPException(403, "Only the household admin can add members")
-    if not pin_is_available(db, body.pin):
-        raise HTTPException(409, "We couldn't save that PIN. Try a different one")
-    member = models.Profile(
-        display_name=body.display_name.strip(),
-        timezone=cfg.timezone,
-        starting_weight_kg=99,
-        height_cm=183,
-        pin_hash=hash_pin(body.pin),
-        is_admin=False,
-        onboarding_completed=True,
-        must_change_pin=True,
-    )
-    db.add(member)
-    db.flush()
-    seed_profile(db, member)
+    profile = current_profile(db)
+    expires = body.expires_at
+    if expires.tzinfo is None:
+        raise HTTPException(422, "Travel timezone expiration must include an offset")
+    if expires <= utc_now() or expires > utc_now() + timedelta(days=90):
+        raise HTTPException(422, "Travel timezone must expire within 90 days")
+    profile.temporary_timezone = body.timezone
+    profile.temporary_timezone_expires_at = expires
+    recalculate_user_reminders(db, profile)
     db.commit()
-    return {"id": member.id, "ok": True}
+    return {"ok": True, "message": "Travel timezone enabled"}
 
 
-@app.delete("/api/household/{member_id}")
-def remove_household_member(member_id: int, db: Session = Depends(db_session)):
-    admin = current_profile(db)
-    if not admin.is_admin:
-        raise HTTPException(403, "Only the household admin can remove members")
-    member = db.get(models.Profile, member_id)
-    if not member:
-        raise HTTPException(404, "Household member not found")
-    if member.is_admin or member.id == admin.id:
-        raise HTTPException(400, "The household admin cannot be removed")
+@app.delete("/api/timezone/travel")
+def disable_travel_timezone(db: Session = Depends(db_session)):
+    profile = current_profile(db)
+    profile.temporary_timezone = None
+    profile.temporary_timezone_expires_at = None
+    recalculate_user_reminders(db, profile)
+    db.commit()
+    return {"ok": True, "message": "Returned to your home timezone"}
 
-    habit_ids = select(models.Habit.id).where(models.Habit.profile_id == member.id)
-    task_ids = select(models.DailyTask.id).where(models.DailyTask.habit_id.in_(habit_ids))
-    db.execute(
-        delete(models.TaskCompletion).where(
-            models.TaskCompletion.daily_task_id.in_(task_ids)
+
+@app.delete("/api/auth/pin")
+def disable_pin(db: Session = Depends(db_session)):
+    profile = current_profile(db)
+    ha_identity = db.scalar(
+        select(models.UserIdentity).where(
+            models.UserIdentity.user_id == profile.id,
+            models.UserIdentity.provider == "home_assistant",
         )
     )
-    db.execute(delete(models.DailyTask).where(models.DailyTask.habit_id.in_(habit_ids)))
+    if not ha_identity:
+        raise HTTPException(400, "PIN access cannot be disabled without another sign-in method")
+    profile.pin_hash = None
     db.execute(
-        delete(models.HabitSchedule).where(models.HabitSchedule.habit_id.in_(habit_ids))
+        delete(models.UserIdentity).where(
+            models.UserIdentity.user_id == profile.id,
+            models.UserIdentity.provider == "pin",
+        )
     )
-    db.execute(delete(models.Habit).where(models.Habit.profile_id == member.id))
+    db.commit()
+    return {"ok": True, "message": "Standalone PIN disabled"}
+
+
+def delete_user_data(db: Session, profile: models.Profile) -> None:
+    habit_ids = select(models.Habit.id).where(models.Habit.profile_id == profile.id)
+    task_ids = select(models.DailyTask.id).where(models.DailyTask.habit_id.in_(habit_ids))
+    rule_ids = select(models.ReminderRule.id).where(models.ReminderRule.profile_id == profile.id)
+    db.execute(delete(models.NotificationDelivery).where(models.NotificationDelivery.rule_id.in_(rule_ids)))
+    db.execute(delete(models.TaskCompletion).where(models.TaskCompletion.daily_task_id.in_(task_ids)))
+    db.execute(delete(models.DailyTask).where(models.DailyTask.habit_id.in_(habit_ids)))
+    db.execute(delete(models.HabitSchedule).where(models.HabitSchedule.habit_id.in_(habit_ids)))
+    db.execute(delete(models.Habit).where(models.Habit.profile_id == profile.id))
     for model in (
         models.ExerciseSession,
         models.MealCheckin,
@@ -1045,46 +1153,21 @@ def remove_household_member(member_id: int, db: Session = Depends(db_session)):
         models.ReminderRule,
         models.ExternalEntityMapping,
         models.AuditEvent,
+        models.UserIdentity,
     ):
-        db.execute(delete(model).where(model.profile_id == member.id))
-    db.delete(member)
-    audit(db, "delete", "app_profile", member_id, {"display_name": member.display_name})
-    db.commit()
-    return {"ok": True}
+        column = model.user_id if model is models.UserIdentity else model.profile_id
+        db.execute(delete(model).where(column == profile.id))
+    db.delete(profile)
 
 
-@app.put("/api/household/complete-setup")
-def complete_member_setup(
-    body: schemas.MemberSetupIn,
-    response: Response,
-    db: Session = Depends(db_session),
-):
+@app.delete("/api/account")
+def delete_account(response: Response, db: Session = Depends(db_session)):
     profile = current_profile(db)
-    if not profile.must_change_pin:
-        raise HTTPException(409, "First-time setup is already complete")
-    if not pin_is_available(db, body.new_pin, profile.id):
-        raise HTTPException(409, "We couldn't save that PIN. Try a different one")
-    profile.timezone = body.timezone
-    profile.starting_weight_kg = body.starting_weight_kg
-    if body.height_cm is not None:
-        profile.height_cm = body.height_cm
-    profile.pin_hash = hash_pin(body.new_pin)
-    profile.must_change_pin = False
-    water = db.get(models.UserSetting, (profile.id, "water_target_ml"))
-    water.value = str(body.water_target_ml)
-    audit(
-        db,
-        "complete_setup",
-        "app_profile",
-        profile.id,
-        {"timezone": profile.timezone},
-    )
+    delete_user_data(db, profile)
     db.commit()
-    return {
-        "ok": True,
-        "csrf_token": set_session_cookies(response, profile),
-        "message": "Your dashboard is ready",
-    }
+    response.delete_cookie("health_session")
+    response.delete_cookie("health_csrf")
+    return {"ok": True}
 
 
 @app.post("/api/integration/test")
@@ -1222,16 +1305,25 @@ def openapi_docs():
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Health OS API · API documentation</title>
-    <link rel="icon" href="/docs-assets/favicon-32x32.png">
-    <link rel="stylesheet" href="/docs-assets/swagger-ui.css">
+    <link rel="icon" href="./docs-assets/favicon-32x32.png">
+    <link rel="stylesheet" href="./docs-assets/swagger-ui.css">
   </head>
   <body>
     <div id="swagger-ui"></div>
-    <script src="/docs-assets/swagger-ui-bundle.js"></script>
-    <script src="/docs-assets/swagger-init.js"></script>
+    <script src="./docs-assets/swagger-ui-bundle.js"></script>
+    <script src="./docs-assets/swagger-init.js"></script>
   </body>
 </html>"""
     )
+
+
+@app.api_route(
+    "/api/{unknown_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    include_in_schema=False,
+)
+def unknown_api_route(unknown_path: str):
+    raise HTTPException(404, "API route not found")
 
 
 if frontend.exists():

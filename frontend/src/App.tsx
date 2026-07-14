@@ -40,7 +40,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { api, post } from "./api";
+import { api, apiUrl, post } from "./api";
 import type { Callout, Task, Today as TodayType } from "./types";
 import { HabitIcon } from "./icons";
 type View = "today" | "week" | "progress" | "plan" | "settings";
@@ -1377,155 +1377,6 @@ function Settings() {
   return <SettingsEditor initial={q.data!} />;
 }
 
-function HouseholdPanel() {
-  const qc = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const [message, setMessage] = useState("");
-  const [removingId, setRemovingId] = useState<number | null>(null);
-  const [form, setForm] = useState({
-    display_name: "",
-    pin: "",
-  });
-  const members = useQuery({
-    queryKey: ["household"],
-    queryFn: () =>
-      api<
-        {
-          id: number;
-          display_name: string;
-          timezone: string;
-          is_admin: boolean;
-          must_change_pin: boolean;
-        }[]
-      >("/household"),
-  });
-  const add = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setMessage("");
-    try {
-      await post("/household", form);
-      setOpen(false);
-      setForm({ display_name: "", pin: "" });
-      await qc.invalidateQueries({ queryKey: ["household"] });
-    } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Could not add this member",
-      );
-    }
-  };
-  const remove = async (member: { id: number; display_name: string }) => {
-    if (
-      !confirm(
-        `Remove ${member.display_name} and all of their health data from this server? This cannot be undone.`,
-      )
-    )
-      return;
-    setMessage("");
-    setRemovingId(member.id);
-    try {
-      await api(`/household/${member.id}`, { method: "DELETE" });
-      await qc.invalidateQueries({ queryKey: ["household"] });
-    } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Could not remove this member",
-      );
-    } finally {
-      setRemovingId(null);
-    }
-  };
-  return (
-    <section className="form-section household-panel">
-      <div className="household-heading">
-        <div>
-          <span className="eyebrow">Household</span>
-          <h3>People on this server</h3>
-          <p>Each PIN opens a separate dashboard, plan, and health history.</p>
-        </div>
-        <button type="button" onClick={() => setOpen(!open)}>
-          <Plus size={16} /> Add member
-        </button>
-      </div>
-      {open && (
-        <form className="household-form" onSubmit={add}>
-          <div className="field-grid">
-            <label>
-              Name
-              <input
-                value={form.display_name}
-                onChange={(e) =>
-                  setForm({ ...form, display_name: e.target.value })
-                }
-                required
-              />
-            </label>
-            <label>
-              Temporary PIN
-              <input
-                type="password"
-                inputMode="numeric"
-                minLength={4}
-                value={form.pin}
-                onChange={(e) => setForm({ ...form, pin: e.target.value })}
-                required
-              />
-              <small>They’ll replace this after their first sign-in.</small>
-            </label>
-          </div>
-          <div className="save-row">
-            <button type="submit">Create member</button>
-            <button
-              type="button"
-              className="quiet-button"
-              onClick={() => setOpen(false)}
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-      {message && (
-        <p className="form-error" role="alert">
-          {message}
-        </p>
-      )}
-      <div className="member-list">
-        {members.data?.map((member) => (
-          <div key={member.id}>
-            <span className="member-avatar">
-              {member.display_name.slice(0, 1).toUpperCase()}
-            </span>
-            <span>
-              <strong>{member.display_name}</strong>
-              <small>
-                {member.timezone}
-                {member.must_change_pin ? " · Awaiting first sign-in" : ""}
-              </small>
-            </span>
-            {member.is_admin ? (
-              <i>Admin</i>
-            ) : (
-              <button
-                type="button"
-                className="icon-button member-remove"
-                aria-label={`Remove ${member.display_name}`}
-                title="Remove member"
-                disabled={removingId === member.id}
-                onClick={() => remove(member)}
-              >
-                {removingId === member.id ? (
-                  <LoaderCircle className="spin" size={16} />
-                ) : (
-                  <Trash2 size={16} />
-                )}
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 type AppSettings = {
   display_name: string;
   starting_weight_kg: number;
@@ -1533,10 +1384,22 @@ type AppSettings = {
   caffeine_cutoff: string;
   water_target_ml: number;
   weight_milestones: number[];
-  allow_embedding: boolean;
-  embedding_origins: string[];
+  notification_target: string;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  timezone_mismatch_alerts: boolean;
+  friday_reminders: "normal" | "gentle" | "paused";
+  saturday_reminders: "normal" | "gentle" | "paused";
+  reminders_paused: boolean;
+  urgent_bypasses_quiet_hours: boolean;
+  active_timezone: string;
+  temporary_timezone: string | null;
+  temporary_timezone_expires_at: string | null;
+  timezone_source: string;
+  timezone_confirmed: boolean;
   pin_configured: boolean;
-  is_admin: boolean;
+  sign_in_methods: string[];
+  home_assistant_display_name: string | null;
   photo_uploads_enabled: boolean;
 };
 
@@ -1545,7 +1408,6 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
   const [form, setForm] = useState({
     ...initial,
     weight_milestones: initial.weight_milestones.join(", "),
-    embedding_origins: initial.embedding_origins.join("\n"),
   });
   const [currentPin, setCurrentPin] = useState("");
   const [newPin, setNewPin] = useState("");
@@ -1554,6 +1416,10 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
   const [message, setMessage] = useState("");
   const [pinMessage, setPinMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [timezoneNotice, setTimezoneNotice] = useState(
+    initial.timezone_mismatch_alerts && detectedTimezone !== initial.timezone,
+  );
+  const hasHomeAssistant = initial.sign_in_methods.includes("home_assistant");
 
   const set = (key: string, value: string | number | boolean) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -1571,10 +1437,6 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
           .split(",")
           .map((value) => Number(value.trim()))
           .filter((value) => Number.isFinite(value)),
-        embedding_origins: form.embedding_origins
-          .split(/[\n,]+/)
-          .map((value) => value.trim())
-          .filter(Boolean),
       };
       const result = await api<{ message: string }>("/settings", {
         method: "PUT",
@@ -1593,6 +1455,53 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const disablePin = async () => {
+    if (!confirm("Disable standalone PIN access for this account?")) return;
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>("/auth/pin", {
+        method: "DELETE",
+      });
+      setPinMessage(result.message);
+      setPinConfigured(false);
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+    } catch (error) {
+      setPinMessage(
+        error instanceof Error ? error.message : "Could not disable PIN access",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const useTravelTimezone = async () => {
+    const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    await api("/timezone/travel", {
+      method: "PUT",
+      body: JSON.stringify({
+        timezone: detectedTimezone,
+        expires_at: expires.toISOString(),
+      }),
+    });
+    location.reload();
+  };
+
+  const endTravelTimezone = async () => {
+    await api("/timezone/travel", { method: "DELETE" });
+    location.reload();
+  };
+
+  const deleteAccount = async () => {
+    if (
+      !confirm(
+        "Permanently delete your Health OS account and all of its health data? This cannot be undone.",
+      )
+    )
+      return;
+    await api("/account", { method: "DELETE" });
+    location.reload();
   };
 
   const changePin = async (event: React.FormEvent) => {
@@ -1636,13 +1545,65 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
       <form className="settings-form" onSubmit={save}>
         <section className="form-section">
           <div className="form-heading">
-            <span className="eyebrow">Daily preferences</span>
-            <h3>Schedule and targets</h3>
+            <span className="eyebrow">Time and notifications</span>
+            <h3>Your schedule and targets</h3>
             <p>
               Personal baselines for your progress, hydration, and future
               notifications. Task times are managed in your Plan.
             </p>
           </div>
+          {timezoneNotice && (
+            <div className="timezone-notice" role="status">
+              <p>
+                Your device is using <strong>{detectedTimezone}</strong>, while
+                Health OS is set to <strong>{form.timezone}</strong>.
+              </p>
+              <div className="button-row">
+                <button type="button" onClick={() => setTimezoneNotice(false)}>
+                  Keep {form.timezone}
+                </button>
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={useTravelTimezone}
+                >
+                  Use {detectedTimezone} for 7 days
+                </button>
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => {
+                    set("timezone", detectedTimezone);
+                    setTimezoneNotice(false);
+                  }}
+                >
+                  Change to {detectedTimezone}
+                </button>
+                <button
+                  type="button"
+                  className="quiet-button"
+                  onClick={() => setTimezoneNotice(false)}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+          {initial.temporary_timezone && (
+            <div className="timezone-notice" role="status">
+              <p>
+                Travel mode is using <strong>{initial.active_timezone}</strong>
+                until{" "}
+                {new Date(
+                  initial.temporary_timezone_expires_at!,
+                ).toLocaleString()}
+                .
+              </p>
+              <button type="button" onClick={endTravelTimezone}>
+                Return to {initial.timezone}
+              </button>
+            </div>
+          )}
           <div className="field-grid">
             <label>
               Display name
@@ -1707,59 +1668,95 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
               />
               <small>Separate milestones with commas, highest to lowest.</small>
             </label>
-          </div>
-        </section>
-
-        {form.is_admin && (
-          <section className="form-section">
-            <div className="form-heading">
-              <span className="eyebrow">External display</span>
-              <h3>Allow Embedding</h3>
-              <p>
-                Permit trusted dashboards, wall displays, or other local sites
-                to show Health OS inside a frame.
-              </p>
-            </div>
-            <label className="toggle-row">
+            <label>
+              Quiet hours start
+              <input
+                type="time"
+                value={form.quiet_hours_start}
+                onChange={(event) =>
+                  set("quiet_hours_start", event.target.value)
+                }
+              />
+            </label>
+            <label>
+              Quiet hours end
+              <input
+                type="time"
+                value={form.quiet_hours_end}
+                onChange={(event) => set("quiet_hours_end", event.target.value)}
+              />
+            </label>
+            <label className="wide-field">
+              Home Assistant notification target
+              <input
+                value={form.notification_target}
+                onChange={(event) =>
+                  set("notification_target", event.target.value)
+                }
+                placeholder="notify.mobile_app_my_phone"
+              />
+              <small>This target is private to your account.</small>
+            </label>
+            <label>
+              Friday reminders
+              <select
+                value={form.friday_reminders}
+                onChange={(event) =>
+                  set("friday_reminders", event.target.value)
+                }
+              >
+                <option value="normal">Normal</option>
+                <option value="gentle">Gentle</option>
+                <option value="paused">Paused</option>
+              </select>
+            </label>
+            <label>
+              Saturday reminders
+              <select
+                value={form.saturday_reminders}
+                onChange={(event) =>
+                  set("saturday_reminders", event.target.value)
+                }
+              >
+                <option value="normal">Normal</option>
+                <option value="gentle">Gentle</option>
+                <option value="paused">Paused</option>
+              </select>
+            </label>
+            <label className="wide-field check-row">
+              <input
+                type="checkbox"
+                checked={form.reminders_paused}
+                onChange={(event) =>
+                  set("reminders_paused", event.target.checked)
+                }
+              />
               <span>
-                <strong>Allow Health OS to be embedded</strong>
+                Pause all reminders
                 <small>
-                  Only the exact origins listed below will be permitted.
+                  Existing schedules stay saved and resume when this is turned
+                  off.
                 </small>
-              </span>
-              <span className="switch">
-                <input
-                  type="checkbox"
-                  checked={form.allow_embedding}
-                  onChange={(event) =>
-                    set("allow_embedding", event.target.checked)
-                  }
-                />
-                <span />
               </span>
             </label>
-            {form.allow_embedding && (
-              <label className="origin-field">
-                Permitted origins
-                <textarea
-                  rows={4}
-                  value={form.embedding_origins}
-                  onChange={(event) =>
-                    set("embedding_origins", event.target.value)
-                  }
-                  placeholder={
-                    "http://dashboard.local:8123\nhttps://display.example.internal"
-                  }
-                  required
-                />
+            <label className="wide-field check-row">
+              <input
+                type="checkbox"
+                checked={form.urgent_bypasses_quiet_hours}
+                onChange={(event) =>
+                  set("urgent_bypasses_quiet_hours", event.target.checked)
+                }
+              />
+              <span>
+                Allow urgent safety reminders during quiet hours
                 <small>
-                  One origin per line, including http:// or https:// and its
-                  port.
+                  Only reminder rules explicitly marked urgent can bypass quiet
+                  hours.
                 </small>
-              </label>
-            )}
-          </section>
-        )}
+              </span>
+            </label>
+          </div>
+        </section>
 
         <div className="save-row">
           <button type="submit" disabled={busy}>
@@ -1772,7 +1769,15 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
       <form className="form-section pin-form" onSubmit={changePin}>
         <div className="form-heading">
           <span className="eyebrow">Access protection</span>
-          <h3>{pinConfigured ? "Change PIN" : "Set a PIN"}</h3>
+          <h3>{pinConfigured ? "Standalone PIN" : "Enable standalone PIN"}</h3>
+          {hasHomeAssistant && (
+            <p>
+              Sign-in method: Home Assistant
+              {initial.home_assistant_display_name
+                ? ` · ${initial.home_assistant_display_name}`
+                : ""}
+            </p>
+          )}
           <p>The PIN is stored only as a secure Argon2 hash.</p>
         </div>
         <div className="field-grid">
@@ -1813,24 +1818,34 @@ function SettingsEditor({ initial }: { initial: AppSettings }) {
         </div>
         <div className="save-row">
           <button type="submit" disabled={busy || newPin.length < 4}>
-            Update PIN
+            {pinConfigured ? "Update PIN" : "Enable PIN"}
           </button>
+          {pinConfigured && hasHomeAssistant && (
+            <button type="button" className="quiet-button" onClick={disablePin}>
+              Disable PIN
+            </button>
+          )}
           {pinMessage && <p role="status">{pinMessage}</p>}
         </div>
       </form>
-
-      {form.is_admin && <HouseholdPanel />}
 
       <section className="panel">
         <h3>Your data</h3>
         <p>Download portable copies whenever you like.</p>
         <div className="button-row">
-          <a href="/api/export/json" download="health-os-data.json">
+          <a href={apiUrl("/export/json")} download="health-os-data.json">
             JSON export
           </a>
-          <a href="/api/export/weight.csv">Weight CSV</a>
-          <a href="/api/export/sleep.csv">Sleep CSV</a>
+          <a href={apiUrl("/export/weight.csv")}>Weight CSV</a>
+          <a href={apiUrl("/export/sleep.csv")}>Sleep CSV</a>
         </div>
+      </section>
+      <section className="panel danger-zone">
+        <h3>Delete my account</h3>
+        <p>Permanently remove only your private Health OS space and data.</p>
+        <button type="button" className="quiet-button" onClick={deleteAccount}>
+          Delete my account
+        </button>
       </section>
     </div>
   );
@@ -1852,12 +1867,18 @@ function PageTitle({
     </header>
   );
 }
-function Onboarding() {
+function Onboarding({
+  homeAssistant = false,
+  initialName = "",
+}: {
+  homeAssistant?: boolean;
+  initialName?: string;
+}) {
   const [step, setStep] = useState(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [form, setForm] = useState({
-    display_name: "",
+    display_name: initialName,
     timezone: detectedTimezone,
     starting_weight_kg: "",
     height_cm: "",
@@ -1870,22 +1891,23 @@ function Onboarding() {
   const next = (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
-    if (step < 3) {
+    const finalStep = homeAssistant ? 2 : 3;
+    if (step < finalStep) {
       setStep(step + 1);
       return;
     }
-    if (form.pin !== form.confirm_pin) {
+    if (!homeAssistant && form.pin !== form.confirm_pin) {
       setError("The PIN entries do not match.");
       return;
     }
     setBusy(true);
-    post("/onboarding", {
+    post(homeAssistant ? "/onboarding/home-assistant" : "/onboarding", {
       display_name: form.display_name,
       timezone: form.timezone,
       starting_weight_kg: Number(form.starting_weight_kg),
       height_cm: form.height_cm ? Number(form.height_cm) : null,
       water_target_ml: Number(form.water_target_ml),
-      pin: form.pin,
+      ...(homeAssistant ? {} : { pin: form.pin }),
     })
       .then(() => location.reload())
       .catch((reason) => {
@@ -1905,19 +1927,27 @@ function Onboarding() {
             <small>steady, not strict</small>
           </div>
         </div>
-        <div className="onboarding-progress" aria-label={`Step ${step} of 3`}>
-          {[1, 2, 3].map((value) => (
+        <div
+          className="onboarding-progress"
+          aria-label={`Step ${step} of ${homeAssistant ? 2 : 3}`}
+        >
+          {Array.from(
+            { length: homeAssistant ? 2 : 3 },
+            (_, index) => index + 1,
+          ).map((value) => (
             <i key={value} className={value <= step ? "active" : ""} />
           ))}
         </div>
         <form onSubmit={next}>
           {step === 1 && (
             <>
-              <span className="eyebrow">Step 1 of 3 · About you</span>
+              <span className="eyebrow">
+                Step 1 of {homeAssistant ? 2 : 3} · About you
+              </span>
               <h1>Let’s make this yours.</h1>
               <p>
-                Your name and timezone keep each household member’s day
-                personal.
+                We detected {timezoneLabel(detectedTimezone)}. Confirm it or
+                choose another timezone for your Health OS schedule.
               </p>
               <div className="field-grid onboarding-fields">
                 <label className="wide-field">
@@ -1941,7 +1971,9 @@ function Onboarding() {
           )}
           {step === 2 && (
             <>
-              <span className="eyebrow">Step 2 of 3 · Starting point</span>
+              <span className="eyebrow">
+                Step 2 of {homeAssistant ? 2 : 3} · Starting point
+              </span>
               <h1>Set gentle targets.</h1>
               <p>These are private baselines. You can change them anytime.</p>
               <div className="field-grid onboarding-fields">
@@ -1984,7 +2016,7 @@ function Onboarding() {
               </div>
             </>
           )}
-          {step === 3 && (
+          {!homeAssistant && step === 3 && (
             <>
               <span className="eyebrow">Step 3 of 3 · Private access</span>
               <h1>Choose your PIN.</h1>
@@ -2032,7 +2064,7 @@ function Onboarding() {
               </button>
             )}
             <button type="submit" disabled={busy}>
-              {step === 3
+              {step === (homeAssistant ? 2 : 3)
                 ? busy
                   ? "Creating your space..."
                   : "Open my dashboard"
@@ -2042,217 +2074,14 @@ function Onboarding() {
           </div>
         </form>
         <small className="onboarding-privacy">
-          <ShieldCheck size={14} /> Every household member gets a separate
-          private space.
+          <ShieldCheck size={14} /> This creates only your private Health OS
+          space.
         </small>
       </section>
     </main>
   );
 }
-function MemberSetupWizard({ name }: { name: string }) {
-  const [step, setStep] = useState(0);
-  const [form, setForm] = useState({
-    timezone: detectedTimezone,
-    starting_weight_kg: "",
-    height_cm: "",
-    water_target_ml: "2000",
-  });
-  const [pin, setPin] = useState("");
-  const [confirmPin, setConfirmPin] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const save = (event: React.FormEvent) => {
-    event.preventDefault();
-    setError("");
-    if (pin !== confirmPin) {
-      setError("The PIN entries do not match.");
-      return;
-    }
-    setBusy(true);
-    api("/household/complete-setup", {
-      method: "PUT",
-      body: JSON.stringify({
-        timezone: form.timezone,
-        starting_weight_kg: Number(form.starting_weight_kg),
-        height_cm: form.height_cm ? Number(form.height_cm) : null,
-        water_target_ml: Number(form.water_target_ml),
-        new_pin: pin,
-      }),
-    })
-      .then(() => location.reload())
-      .catch((reason) => {
-        setError(reason.message);
-        setBusy(false);
-      });
-  };
-  return (
-    <main className="onboarding-shell">
-      <section className="onboarding-card first-pin-card">
-        <div className="onboarding-brand">
-          <span>
-            <LockKeyhole />
-          </span>
-          <div>
-            <strong>Welcome, {name}</strong>
-            <small>Your private Health OS space</small>
-          </div>
-        </div>
-        <form onSubmit={save}>
-          <div className="onboarding-progress" aria-label="Setup progress">
-            {[0, 1, 2].map((index) => (
-              <i key={index} className={index <= step ? "active" : ""} />
-            ))}
-          </div>
-          {step === 0 && (
-            <>
-              <span className="eyebrow">Your local rhythm</span>
-              <h1>Set your timezone.</h1>
-              <p>
-                We use this to show each day and task at the right time for you.
-              </p>
-              <div className="field-grid onboarding-fields">
-                <label>
-                  Timezone
-                  <TimezoneSelect
-                    autoFocus
-                    value={form.timezone}
-                    onChange={(value) => setForm({ ...form, timezone: value })}
-                  />
-                </label>
-              </div>
-            </>
-          )}
-          {step === 1 && (
-            <>
-              <span className="eyebrow">Your starting point</span>
-              <h1>Add your health baseline.</h1>
-              <p>
-                These values make your progress and daily water goal personal.
-              </p>
-              <div className="field-grid onboarding-fields">
-                <label>
-                  Starting weight (kg)
-                  <input
-                    autoFocus
-                    type="number"
-                    min="20.1"
-                    max="399.9"
-                    step="0.1"
-                    value={form.starting_weight_kg}
-                    onChange={(event) =>
-                      setForm({
-                        ...form,
-                        starting_weight_kg: event.target.value,
-                      })
-                    }
-                    required
-                  />
-                </label>
-                <label>
-                  Height (cm, optional)
-                  <input
-                    type="number"
-                    min="80.1"
-                    max="249.9"
-                    step="0.1"
-                    value={form.height_cm}
-                    onChange={(event) =>
-                      setForm({ ...form, height_cm: event.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  Daily water target (ml)
-                  <input
-                    type="number"
-                    min="250"
-                    max="10000"
-                    step="50"
-                    value={form.water_target_ml}
-                    onChange={(event) =>
-                      setForm({ ...form, water_target_ml: event.target.value })
-                    }
-                    required
-                  />
-                </label>
-              </div>
-            </>
-          )}
-          {step === 2 && (
-            <>
-              <span className="eyebrow">Your private access</span>
-              <h1>Choose your own PIN.</h1>
-              <p>Replace the temporary household PIN with one only you know.</p>
-              <div className="field-grid onboarding-fields">
-                <label>
-                  New PIN
-                  <input
-                    autoFocus
-                    type="password"
-                    inputMode="numeric"
-                    minLength={4}
-                    value={pin}
-                    onChange={(event) => setPin(event.target.value)}
-                    required
-                  />
-                </label>
-                <label>
-                  Confirm new PIN
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    minLength={4}
-                    value={confirmPin}
-                    onChange={(event) => setConfirmPin(event.target.value)}
-                    required
-                  />
-                </label>
-              </div>
-            </>
-          )}
-          {error && (
-            <p className="form-error" role="alert">
-              {error}
-            </p>
-          )}
-          <div className="onboarding-actions">
-            {step > 0 && (
-              <button
-                type="button"
-                className="quiet-button"
-                onClick={() => setStep(step - 1)}
-              >
-                Back
-              </button>
-            )}
-            {step < 2 ? (
-              <button
-                type="button"
-                disabled={
-                  (step === 0 && !form.timezone.trim()) ||
-                  (step === 1 && !form.starting_weight_kg)
-                }
-                onClick={() => setStep(step + 1)}
-              >
-                Continue <ArrowRight size={17} />
-              </button>
-            ) : (
-              <button disabled={busy || pin.length < 4}>
-                {busy ? "Saving..." : "Open my dashboard"}
-                <ArrowRight size={17} />
-              </button>
-            )}
-          </div>
-        </form>
-        <small className="onboarding-privacy">
-          <ShieldCheck size={14} /> Your new PIN remains private and securely
-          hashed.
-        </small>
-      </section>
-    </main>
-  );
-}
-function Login() {
+function Login({ onCreate }: { onCreate: () => void }) {
   const [pin, setPin] = useState("");
   const [keep, setKeep] = useState(false);
   const [error, setError] = useState("");
@@ -2347,6 +2176,9 @@ function Login() {
             <ShieldCheck size={14} /> Your PIN is verified locally and never
             leaves your server.
           </p>
+          <button type="button" className="quiet-button" onClick={onCreate}>
+            Create a private account
+          </button>
         </div>
       </section>
     </main>
@@ -2358,15 +2190,35 @@ export default function App() {
     queryFn: () => api<any>("/auth/status"),
   });
   const [view, setView] = useState<View>("today");
+  const [creatingAccount, setCreatingAccount] = useState(false);
   const embedded =
     new URLSearchParams(location.search).get("embedded") === "true";
   const lockDashboard = () =>
     post("/auth/logout").then(() => location.reload());
   if (auth.isLoading) return <Loading />;
-  if (auth.data?.onboarding_required) return <Onboarding />;
-  if (auth.data?.pin_required && !auth.data.authenticated) return <Login />;
-  if (auth.data?.profile?.must_change_pin)
-    return <MemberSetupWizard name={auth.data.profile.display_name} />;
+  if (creatingAccount) return <Onboarding />;
+  if (auth.data?.onboarding_required)
+    return (
+      <Onboarding
+        homeAssistant={auth.data.auth_provider === "home_assistant"}
+        initialName={auth.data.profile?.display_name || ""}
+      />
+    );
+  if (auth.data?.pin_required && !auth.data.authenticated)
+    return <Login onCreate={() => setCreatingAccount(true)} />;
+  if (!auth.data?.authenticated)
+    return (
+      <main className="onboarding-shell">
+        <section className="onboarding-card">
+          <span className="eyebrow">Home Assistant access</span>
+          <h1>Open Health OS through Home Assistant.</h1>
+          <p>
+            This deployment accepts identity only from its trusted Ingress
+            proxy. Direct requests cannot sign in.
+          </p>
+        </section>
+      </main>
+    );
   const views = {
     today: <Today />,
     week: <Week />,

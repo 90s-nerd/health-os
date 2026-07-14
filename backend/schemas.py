@@ -1,6 +1,5 @@
 from datetime import date, datetime, time
 from typing import Literal
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, field_validator
@@ -170,21 +169,30 @@ class OnboardingIn(BaseModel):
         return value
 
 
-class HouseholdMemberIn(BaseModel):
+class HomeAssistantOnboardingIn(BaseModel):
     display_name: str = Field(min_length=1, max_length=80)
-    pin: str = Field(min_length=4, max_length=64)
-
-
-class MemberSetupIn(BaseModel):
     timezone: str = Field(min_length=1, max_length=80)
     starting_weight_kg: float = Field(gt=20, lt=400)
     height_cm: float | None = Field(default=None, gt=80, lt=250)
     water_target_ml: int = Field(default=2000, ge=250, le=10000)
-    new_pin: str = Field(min_length=4, max_length=64)
 
     @field_validator("timezone")
     @classmethod
-    def member_timezone(cls, value: str) -> str:
+    def onboarding_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("Use a valid IANA timezone such as America/Chicago") from exc
+        return value
+
+
+class TravelTimezoneIn(BaseModel):
+    timezone: str = Field(min_length=1, max_length=80)
+    expires_at: datetime
+
+    @field_validator("timezone")
+    @classmethod
+    def travel_timezone(cls, value: str) -> str:
         try:
             ZoneInfo(value)
         except ZoneInfoNotFoundError as exc:
@@ -199,8 +207,14 @@ class AppSettingsIn(BaseModel):
     caffeine_cutoff: time
     water_target_ml: int = Field(ge=250, le=10000)
     weight_milestones: list[float] = Field(min_length=1, max_length=10)
-    allow_embedding: bool
-    embedding_origins: list[str] = Field(max_length=20)
+    notification_target: str = Field(default="", max_length=160)
+    quiet_hours_start: time | None = None
+    quiet_hours_end: time | None = None
+    timezone_mismatch_alerts: bool = True
+    friday_reminders: Literal["normal", "gentle", "paused"] = "gentle"
+    saturday_reminders: Literal["normal", "gentle", "paused"] = "gentle"
+    reminders_paused: bool = False
+    urgent_bypasses_quiet_hours: bool = False
 
     @field_validator("timezone")
     @classmethod
@@ -210,16 +224,3 @@ class AppSettingsIn(BaseModel):
         except ZoneInfoNotFoundError as exc:
             raise ValueError("Use a valid IANA timezone such as America/Chicago") from exc
         return value
-
-    @field_validator("embedding_origins")
-    @classmethod
-    def valid_origins(cls, values: list[str]) -> list[str]:
-        cleaned = []
-        for value in values:
-            value = value.strip().rstrip("/")
-            parsed = urlparse(value)
-            if parsed.scheme not in ("http", "https") or not parsed.netloc or parsed.path:
-                raise ValueError("Embedding origins must look like https://dashboard.example.com")
-            if value not in cleaned:
-                cleaned.append(value)
-        return cleaned

@@ -1,7 +1,9 @@
 import secrets
 import time
 from collections import defaultdict
+from datetime import UTC, datetime
 from functools import lru_cache
+from ipaddress import ip_address, ip_network
 
 from argon2 import PasswordHasher
 from fastapi import HTTPException, Request
@@ -10,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import get_config
-from .models import Profile
+from .models import Profile, UserIdentity
 
 hasher = PasswordHasher()
 attempts: dict[str, list[float]] = defaultdict(list)
@@ -36,6 +38,100 @@ def profile_for_pin(db: Session, pin: str) -> Profile | None:
     if configured and verify_pin(pin, configured):
         return db.scalar(select(Profile).order_by(Profile.id))
     return None
+
+
+def ensure_pin_identity(db: Session, profile: Profile) -> UserIdentity:
+    identity = db.scalar(
+        select(UserIdentity).where(
+            UserIdentity.provider == "pin", UserIdentity.user_id == profile.id
+        )
+    )
+    if not identity:
+        identity = UserIdentity(
+            user_id=profile.id,
+            provider="pin",
+            provider_subject=f"profile:{profile.id}",
+            provider_display_name=profile.display_name,
+        )
+        db.add(identity)
+    return identity
+
+
+def auth_mode() -> str:
+    cfg = get_config()
+    mode = cfg.auth_mode.lower()
+    if mode not in {"pin", "home_assistant", "auto"}:
+        raise RuntimeError("AUTH_MODE must be pin, home_assistant, or auto")
+    return mode
+
+
+def home_assistant_enabled() -> bool:
+    cfg = get_config()
+    return cfg.deployment_mode.lower() == "home_assistant" and auth_mode() in {
+        "home_assistant",
+        "auto",
+    }
+
+
+def trusted_home_assistant_request(request: Request) -> bool:
+    if not home_assistant_enabled():
+        return False
+    host = request.client.host if request.client else ""
+    trusted = [value.strip() for value in get_config().ha_trusted_proxies.split(",") if value.strip()]
+    if host in trusted:
+        return True
+    try:
+        address = ip_address(host)
+        return any(address in ip_network(value, strict=False) for value in trusted)
+    except ValueError:
+        return False
+
+
+def profile_for_home_assistant(request: Request, db: Session) -> Profile | None:
+    if not trusted_home_assistant_request(request):
+        return None
+    subject = request.headers.get("X-Remote-User-Id", "").strip()
+    if not subject:
+        raise HTTPException(401, "Home Assistant identity is unavailable")
+    identity = db.scalar(
+        select(UserIdentity).where(
+            UserIdentity.provider == "home_assistant",
+            UserIdentity.provider_subject == subject,
+        )
+    )
+    now = datetime.now(UTC)
+    username = request.headers.get("X-Remote-User-Name")
+    display_name = request.headers.get("X-Remote-User-Display-Name") or username
+    if identity:
+        identity.provider_username = username
+        identity.provider_display_name = display_name
+        identity.updated_at = now
+        identity.last_login_at = now
+        profile = db.get(Profile, identity.user_id)
+        db.commit()
+        return profile
+    profile = Profile(
+        display_name=(display_name or "Home Assistant user").strip()[:80],
+        timezone=get_config().default_timezone,
+        timezone_source="default",
+        is_admin=False,
+        onboarding_completed=False,
+        must_change_pin=False,
+    )
+    db.add(profile)
+    db.flush()
+    db.add(
+        UserIdentity(
+            user_id=profile.id,
+            provider="home_assistant",
+            provider_subject=subject,
+            provider_username=username,
+            provider_display_name=display_name,
+            last_login_at=now,
+        )
+    )
+    db.commit()
+    return profile
 
 
 def pin_is_available(db: Session, pin: str, excluding_profile_id: int | None = None) -> bool:
@@ -86,7 +182,7 @@ def require_session(request: Request, pin_required: bool):
     if not token:
         raise HTTPException(401, "PIN required")
     try:
-        return serializer().loads(token, max_age=get_config().keep_signed_in_days * 86400)
+        payload = serializer().loads(token, max_age=get_config().keep_signed_in_days * 86400)
     except (BadSignature, SignatureExpired) as exc:
         raise HTTPException(401, "Session expired") from exc
     if request.method not in ("GET", "HEAD", "OPTIONS"):
@@ -94,3 +190,4 @@ def require_session(request: Request, pin_required: bool):
         cookie = request.cookies.get("health_csrf")
         if not csrf or not cookie or not secrets.compare_digest(csrf, cookie):
             raise HTTPException(403, "Invalid CSRF token")
+    return payload

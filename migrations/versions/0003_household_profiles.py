@@ -1,7 +1,7 @@
 """Add household profiles and per-user health data."""
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from sqlalchemy import inspect
 
 revision = "0003"
