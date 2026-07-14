@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/90s-nerd/health-os/compare/v1.1.0...v1.1.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* constrain mobile time controls ([#6](https://github.com/90s-nerd/health-os/issues/6)) ([cb4b9bc](https://github.com/90s-nerd/health-os/commit/cb4b9bc1e0a76ef3fea3ff4eb76131f80b19693b))
+
 ## [1.1.0](https://github.com/90s-nerd/health-os/compare/v1.0.4...v1.1.0) (2026-07-14)
 
 
