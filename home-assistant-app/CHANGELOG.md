@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/90s-nerd/health-os/compare/v1.1.1...v1.2.0) (2026-07-14)
+
+
+### Features
+
+* support previous-day task catch-up ([bb64637](https://github.com/90s-nerd/health-os/commit/bb64637038eab15132513a576a676f99d095c911))
+
 ## [1.1.1](https://github.com/90s-nerd/health-os/compare/v1.1.0...v1.1.1) (2026-07-14)
 
 
