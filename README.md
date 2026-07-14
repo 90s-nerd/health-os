@@ -72,7 +72,7 @@ The app:
 - accepts identity headers only in Home Assistant deployment mode and only from the configured Supervisor proxy network;
 - keys accounts by stable Home Assistant user ID, while names remain informational;
 - stores its SQLite database and generated session secret under `/data`;
-- supports `amd64`, `aarch64`, and `armv7` images published to GHCR.
+- supports `amd64` and `aarch64` images published to GHCR.
 
 Opening the container port directly is unsupported in Home Assistant mode because trusted Ingress identity headers are absent. Logging out clears the Health OS session; opening it again through Ingress signs the Home Assistant user back in. Removing a Health OS account deletes only that user's local Health OS data and does not change the Home Assistant account.
 
