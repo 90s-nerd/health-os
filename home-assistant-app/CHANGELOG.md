@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/90s-nerd/health-os/compare/v1.0.2...v1.0.3) (2026-07-14)
+
+
+### Bug Fixes
+
+* center progress ring on mobile ([577e75b](https://github.com/90s-nerd/health-os/commit/577e75b10ed47e2a8e7750f947a79895cd94ab03))
+
 ## [1.0.2](https://github.com/90s-nerd/health-os/compare/v1.0.1...v1.0.2) (2026-07-14)
 
 
