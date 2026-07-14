@@ -9,6 +9,14 @@ Health OS supports two deployment modes:
 
 Identity providers are never matched by display name. Linking another sign-in method is an explicit, authenticated action, so people with similar names cannot accidentally share health data.
 
+## Mobile experience
+
+Health OS is designed for quick, comfortable check-ins on a phone. See today's priorities at a glance, review the week without losing the page margins, and catch up on tasks from an earlier day when life gets in the way.
+
+| Today | Weekly rhythm | Catch up on a previous day |
+|:---:|:---:|:---:|
+| <img src="docs/images/health-os-mobile-today-iphone.png" alt="Health OS Today view on an iPhone" width="280"> | <img src="docs/images/health-os-mobile-week-iphone.png" alt="Health OS weekly rhythm view on an iPhone" width="280"> | <img src="docs/images/health-os-mobile-catch-up-iphone.png" alt="Health OS previous-day task catch-up view on an iPhone" width="280"> |
+
 ## Features
 
 - Mobile-first Today screen with one-tap task, water, weight, sleep, and exercise check-ins.

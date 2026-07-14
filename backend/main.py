@@ -539,7 +539,8 @@ def today(day: date | None = None, db: Session = Depends(db_session)):
 
 @app.get("/api/week")
 def week(anchor: date | None = None, db: Session = Depends(db_session)):
-    anchor = anchor or local_today(db)
+    today = local_today(db)
+    anchor = anchor or today
     start = anchor - timedelta(days=anchor.weekday())
     days = []
     now_local = UserClock(current_profile(db)).now()
@@ -560,11 +561,13 @@ def week(anchor: date | None = None, db: Session = Depends(db_session)):
                 "day": current.day,
                 "mode": mode_for(current),
                 "completion": completion_score(tasks),
+                "tasks": tasks,
                 **cats,
             }
         )
     return {
         "start": start.isoformat(),
+        "today": today.isoformat(),
         "days": days,
         "summary": "Every completed core habit is evidence that the routine is becoming easier.",
         "suggestion": "Choose one minimum version before the week begins.",
@@ -776,6 +779,8 @@ def complete_task(task_id: int, body: schemas.TaskAction, db: Session = Depends(
     )
     if not task:
         raise HTTPException(404, "Task not found")
+    if task.task_date > local_today(db):
+        raise HTTPException(400, "Future tasks cannot be updated")
     entry = db.scalar(
         select(models.TaskCompletion).where(models.TaskCompletion.daily_task_id == task_id)
     )
@@ -804,6 +809,8 @@ def skip_task(task_id: int, db: Session = Depends(db_session)):
     )
     if not task:
         raise HTTPException(404, "Task not found")
+    if task.task_date > local_today(db):
+        raise HTTPException(400, "Future tasks cannot be updated")
     entry = db.scalar(
         select(models.TaskCompletion).where(models.TaskCompletion.daily_task_id == task_id)
     ) or models.TaskCompletion(daily_task_id=task_id)
@@ -826,6 +833,8 @@ def undo_task(task_id: int, db: Session = Depends(db_session)):
     )
     if not task:
         raise HTTPException(404, "Task not found")
+    if task.task_date > local_today(db):
+        raise HTTPException(400, "Future tasks cannot be updated")
     db.execute(delete(models.TaskCompletion).where(models.TaskCompletion.daily_task_id == task_id))
     audit(db, "undo", "task", task_id)
     db.commit()

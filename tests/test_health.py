@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from backend.services import completion_score, mode_for
@@ -66,6 +66,35 @@ def test_optional_tasks_neutral():
 def test_week_schedule(client):
     data = client.get("/api/week?anchor=2026-07-13").json()
     assert len(data["days"]) == 7 and data["days"][4]["mode"]["flexible"]
+    assert all("tasks" in day for day in data["days"])
+
+
+def test_previous_day_tasks_can_be_updated_but_future_tasks_cannot(client):
+    today = date.fromisoformat(client.get("/api/today").json()["date"])
+    past_day = None
+    for offset in range(1, 8):
+        candidate = today - timedelta(days=offset)
+        tasks = client.get(f"/api/today?day={candidate.isoformat()}").json()["tasks"]
+        if tasks:
+            past_day = candidate
+            past_task = tasks[0]
+            break
+    assert past_day is not None
+
+    completed = client.post(f"/api/tasks/{past_task['id']}/complete", json={})
+    assert completed.status_code == 200
+    week = client.get(f"/api/week?anchor={past_day.isoformat()}").json()
+    saved_day = next(item for item in week["days"] if item["date"] == past_day.isoformat())
+    assert next(item for item in saved_day["tasks"] if item["id"] == past_task["id"])[
+        "state"
+    ] == "completed"
+
+    future = today + timedelta(days=1)
+    future_tasks = client.get(f"/api/today?day={future.isoformat()}").json()["tasks"]
+    assert future_tasks
+    response = client.post(f"/api/tasks/{future_tasks[0]['id']}/complete", json={})
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == "Future tasks cannot be updated"
 
 
 def test_plan_entries_can_be_created_edited_and_archived(client):

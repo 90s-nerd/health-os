@@ -46,6 +46,25 @@ const testTask = {
   state: "available",
   minimum_version: false,
 };
+const week = {
+  start: "2026-07-13",
+  today: "2026-07-14",
+  days: Array.from({ length: 7 }, (_, index) => ({
+    date: `2026-07-${String(13 + index).padStart(2, "0")}`,
+    label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][index],
+    day: 13 + index,
+    mode: { name: "Standard Day", flexible: index >= 4 },
+    completion: index === 1 ? 22 : 0,
+    tasks: index === 0 ? [testTask] : [],
+    movement: false,
+    hydration: false,
+    nutrition: false,
+    sleep: false,
+    weight: false,
+  })),
+  summary: "Every completed core habit is evidence.",
+  suggestion: "Choose one minimum version.",
+};
 const testPlanEntry = {
   id: 1,
   key: "evening-walk",
@@ -122,52 +141,63 @@ vi.stubGlobal(
             }
           : url.includes("/today")
             ? { ...today, tasks: [{ ...testTask, state: taskState }] }
-            : url.includes("/household")
-              ? [
-                  {
-                    id: 1,
-                    display_name: "Taylor",
-                    timezone: "America/Chicago",
-                    is_admin: true,
-                    must_change_pin: false,
-                  },
-                ]
-              : url.includes("/settings")
-                ? {
-                    display_name: "Taylor",
-                    starting_weight_kg: 99,
-                    timezone: "America/Chicago",
-                    caffeine_cutoff: "14:00",
-                    water_target_ml: 2000,
-                    weight_milestones: [94, 90, 85],
-                    notification_target: "",
-                    quiet_hours_start: "22:30",
-                    quiet_hours_end: "07:00",
-                    timezone_mismatch_alerts: false,
-                    friday_reminders: "gentle",
-                    saturday_reminders: "gentle",
-                    reminders_paused: false,
-                    urgent_bypasses_quiet_hours: false,
-                    active_timezone: "America/Chicago",
-                    temporary_timezone: null,
-                    temporary_timezone_expires_at: null,
-                    timezone_source: "browser_detected",
-                    timezone_confirmed: true,
-                    pin_configured: true,
-                    sign_in_methods: haAuthenticated
-                      ? ["home_assistant"]
-                      : ["pin"],
-                    home_assistant_display_name: haAuthenticated
-                      ? "Taylor"
-                      : null,
-                    photo_uploads_enabled: false,
-                    is_admin: !haAuthenticated,
-                  }
-                : url.includes("/progress")
-                  ? progress
-                  : url.includes("/plan")
-                    ? [testPlanEntry]
-                    : {},
+            : url.includes("/week")
+              ? {
+                  ...week,
+                  days: week.days.map((day) => ({
+                    ...day,
+                    tasks: day.tasks.map((task) => ({
+                      ...task,
+                      state: taskState,
+                    })),
+                  })),
+                }
+              : url.includes("/household")
+                ? [
+                    {
+                      id: 1,
+                      display_name: "Taylor",
+                      timezone: "America/Chicago",
+                      is_admin: true,
+                      must_change_pin: false,
+                    },
+                  ]
+                : url.includes("/settings")
+                  ? {
+                      display_name: "Taylor",
+                      starting_weight_kg: 99,
+                      timezone: "America/Chicago",
+                      caffeine_cutoff: "14:00",
+                      water_target_ml: 2000,
+                      weight_milestones: [94, 90, 85],
+                      notification_target: "",
+                      quiet_hours_start: "22:30",
+                      quiet_hours_end: "07:00",
+                      timezone_mismatch_alerts: false,
+                      friday_reminders: "gentle",
+                      saturday_reminders: "gentle",
+                      reminders_paused: false,
+                      urgent_bypasses_quiet_hours: false,
+                      active_timezone: "America/Chicago",
+                      temporary_timezone: null,
+                      temporary_timezone_expires_at: null,
+                      timezone_source: "browser_detected",
+                      timezone_confirmed: true,
+                      pin_configured: true,
+                      sign_in_methods: haAuthenticated
+                        ? ["home_assistant"]
+                        : ["pin"],
+                      home_assistant_display_name: haAuthenticated
+                        ? "Taylor"
+                        : null,
+                      photo_uploads_enabled: false,
+                      is_admin: !haAuthenticated,
+                    }
+                  : url.includes("/progress")
+                    ? progress
+                    : url.includes("/plan")
+                      ? [testPlanEntry]
+                      : {},
     };
   }),
 );
@@ -309,6 +339,33 @@ test("adds water from the one-tap dashboard controls", async () => {
         method: "POST",
         body: JSON.stringify({ amount_ml: 350 }),
       }),
+    ),
+  );
+});
+
+test("updates tasks from a previous day in the weekly view", async () => {
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <App />
+    </QueryClientProvider>,
+  );
+  const weekButtons = await screen.findAllByRole("button", { name: "Week" });
+  fireEvent.click(weekButtons[0]);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Update tasks for Mon 13" }),
+  );
+  expect(
+    screen.getByRole("dialog", { name: "Monday, July 13" }),
+  ).toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", {
+      name: "Wake in your target window: available",
+    }),
+  );
+  await waitFor(() =>
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/tasks/1/complete",
+      expect.objectContaining({ method: "POST" }),
     ),
   );
 });

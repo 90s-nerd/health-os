@@ -7,6 +7,7 @@ import {
   BarChart3,
   CalendarDays,
   Check,
+  ChevronLeft,
   ChevronRight,
   Droplets,
   GlassWater,
@@ -743,57 +744,229 @@ function QuickCheck({
   );
 }
 function Week() {
-  const q = useQuery({ queryKey: ["week"], queryFn: () => api<any>("/week") });
+  const qc = useQueryClient();
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const q = useQuery({
+    queryKey: ["week", anchor],
+    queryFn: () =>
+      api<{
+        start: string;
+        today: string;
+        days: Array<{
+          date: string;
+          label: string;
+          day: number;
+          mode: { name: string; flexible: boolean };
+          completion: number;
+          tasks: Task[];
+          movement: boolean;
+          hydration: boolean;
+          nutrition: boolean;
+          sleep: boolean;
+          weight: boolean;
+        }>;
+        summary: string;
+        suggestion: string;
+      }>(`/week${anchor ? `?anchor=${anchor}` : ""}`),
+  });
+  const action = useMutation({
+    mutationFn: ({
+      id,
+      kind,
+      minimum = false,
+    }: {
+      id: number;
+      kind: "complete" | "undo" | "skip";
+      minimum?: boolean;
+    }) =>
+      kind === "undo"
+        ? api(`/tasks/${id}/completion`, { method: "DELETE" })
+        : post(
+            `/tasks/${id}/${kind}`,
+            minimum ? { minimum_version: true } : {},
+          ),
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: ["week"] }),
+        qc.invalidateQueries({ queryKey: ["today"] }),
+      ]),
+  });
   if (q.isLoading) return <Loading />;
   if (q.error) return <ErrorBox error={q.error} />;
+  const data = q.data!;
+  const selectedDay = data.days.find((day) => day.date === selectedDate);
+  const shiftDate = (value: string, days: number) => {
+    const date = new Date(`${value}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  };
+  const formatDate = (value: string, options: Intl.DateTimeFormatOptions) =>
+    new Date(`${value}T12:00:00`).toLocaleDateString(undefined, options);
+  const end = shiftDate(data.start, 6);
+  const currentWeek = data.days.some((day) => day.date === data.today);
   return (
     <div className="page">
-      <PageTitle
-        eyebrow="Weekly rhythm"
-        title="A wider view"
-        copy="One missed day does not erase the pattern you are building."
-      />
+      <div className="week-heading">
+        <PageTitle
+          eyebrow="Weekly rhythm"
+          title="A wider view"
+          copy="One missed day does not erase the pattern you are building. Tap a past day to catch up."
+        />
+        <div className="week-navigation" aria-label="Choose week">
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedDate(null);
+              setAnchor(shiftDate(data.start, -7));
+            }}
+            aria-label="Previous week"
+          >
+            <ChevronLeft size={18} />
+          </button>
+          <span>
+            {formatDate(data.start, { month: "short", day: "numeric" })} –{" "}
+            {formatDate(end, { month: "short", day: "numeric" })}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedDate(null);
+              setAnchor(shiftDate(data.start, 7));
+            }}
+            aria-label="Next week"
+            disabled={currentWeek}
+          >
+            <ChevronRight size={18} />
+          </button>
+        </div>
+      </div>
       <div className="week-grid">
-        {q.data.days.map((d: any) => (
-          <article key={d.date} className={d.mode.flexible ? "relaxed" : ""}>
-            <div>
-              <span>{d.label}</span>
-              <strong>{d.day}</strong>
-            </div>
-            <b>{d.completion}%</b>
-            <div className="mini-progress">
-              <i style={{ height: `${d.completion}%` }} />
-            </div>
-            <ul>
-              {[
-                ["movement", "Move"],
-                ["hydration", "Water"],
-                ["nutrition", "Meals"],
-                ["sleep", "Sleep"],
-                ["weight", "Weight"],
-              ].map(([k, label]) => (
-                <li key={k} className={d[k] ? "yes" : ""}>
-                  <span>{d[k] ? "✓" : "·"}</span>
-                  {label}
-                </li>
-              ))}
-            </ul>
-            <small>{d.mode.name}</small>
-          </article>
-        ))}
+        {data.days.map((d) => {
+          const editable = d.date <= data.today;
+          return (
+            <article
+              key={d.date}
+              className={`${d.mode.flexible ? "relaxed" : ""} ${editable ? "editable" : "future"}`}
+              role={editable ? "button" : undefined}
+              tabIndex={editable ? 0 : undefined}
+              aria-label={
+                editable ? `Update tasks for ${d.label} ${d.day}` : undefined
+              }
+              onClick={() => editable && setSelectedDate(d.date)}
+              onKeyDown={(event) => {
+                if (editable && (event.key === "Enter" || event.key === " ")) {
+                  event.preventDefault();
+                  setSelectedDate(d.date);
+                }
+              }}
+            >
+              <div>
+                <span>{d.label}</span>
+                <strong>{d.day}</strong>
+              </div>
+              <b>{d.completion}%</b>
+              <div className="mini-progress">
+                <i style={{ height: `${d.completion}%` }} />
+              </div>
+              <ul>
+                {(
+                  [
+                    ["movement", "Move"],
+                    ["hydration", "Water"],
+                    ["nutrition", "Meals"],
+                    ["sleep", "Sleep"],
+                    ["weight", "Weight"],
+                  ] as const
+                ).map(([k, label]) => (
+                  <li key={k} className={d[k] ? "yes" : ""}>
+                    <span>{d[k] ? "✓" : "·"}</span>
+                    {label}
+                  </li>
+                ))}
+              </ul>
+              <small>{editable ? "Tap to update" : d.mode.name}</small>
+            </article>
+          );
+        })}
       </div>
       <div className="summary-grid">
         <section className="panel">
           <span className="eyebrow">What went well</span>
           <h3>Progress survived real life</h3>
-          <p>{q.data.summary}</p>
+          <p>{data.summary}</p>
         </section>
         <section className="panel">
           <span className="eyebrow">Try next week</span>
           <h3>Plan the easier option</h3>
-          <p>{q.data.suggestion}</p>
+          <p>{data.suggestion}</p>
         </section>
       </div>
+      {selectedDay && (
+        <div
+          className="modal-backdrop day-editor-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setSelectedDate(null);
+          }}
+        >
+          <section
+            className="day-editor"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="day-editor-title"
+          >
+            <header>
+              <div>
+                <span className="eyebrow">Catch up gently</span>
+                <h2 id="day-editor-title">
+                  {formatDate(selectedDay.date, {
+                    weekday: "long",
+                    month: "long",
+                    day: "numeric",
+                  })}
+                </h2>
+                <p>
+                  Update what happened that day. There is no penalty for
+                  catching up later.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setSelectedDate(null)}
+                aria-label="Close day tasks"
+              >
+                <X size={18} />
+              </button>
+            </header>
+            <div className="day-editor-tasks">
+              {selectedDay.tasks.length ? (
+                selectedDay.tasks.map((task) => (
+                  <TaskCard
+                    key={task.id}
+                    task={task}
+                    pending={action.isPending}
+                    onComplete={(minimum) =>
+                      action.mutate({
+                        id: task.id,
+                        kind: "complete",
+                        minimum,
+                      })
+                    }
+                    onUndo={() => action.mutate({ id: task.id, kind: "undo" })}
+                    onSkip={() => action.mutate({ id: task.id, kind: "skip" })}
+                  />
+                ))
+              ) : (
+                <p className="empty-day">
+                  No tasks were scheduled for this day.
+                </p>
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
