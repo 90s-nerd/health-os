@@ -1,6 +1,7 @@
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from backend.main import SPA_CACHE_CONTROL, spa_index_response
 from backend.services import completion_score, mode_for
 
 
@@ -15,6 +16,14 @@ def test_docs_are_self_hosted(client):
     assert "/docs-assets/swagger-init.js" in response.text
     assert "cdn.jsdelivr.net" not in response.text
     assert "<script>" not in response.text
+
+
+def test_spa_entrypoint_prevents_stale_frontend_caching(tmp_path):
+    (tmp_path / "index.html").write_text("<html></html>", encoding="utf-8")
+    response = spa_index_response(tmp_path)
+    assert response.headers["Cache-Control"] == SPA_CACHE_CONTROL
+    assert response.headers["Pragma"] == "no-cache"
+    assert response.headers["Expires"] == "0"
 
 
 def test_task_checkin_and_undo(client):

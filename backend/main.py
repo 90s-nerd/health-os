@@ -64,6 +64,22 @@ logging.basicConfig(
 )
 log = logging.getLogger("health-os")
 cfg = get_config()
+SPA_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
+
+
+class ImmutableStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope: dict):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
+def spa_index_response(frontend: Path) -> FileResponse:
+    response = FileResponse(frontend / "index.html")
+    response.headers["Cache-Control"] = SPA_CACHE_CONTROL
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 
 def create_backup() -> Path | None:
@@ -1471,8 +1487,12 @@ def unknown_api_route(unknown_path: str):
 
 
 if frontend.exists():
-    app.mount("/assets", StaticFiles(directory=frontend / "assets"), name="assets")
+    app.mount(
+        "/assets",
+        ImmutableStaticFiles(directory=frontend / "assets"),
+        name="assets",
+    )
 
     @app.get("/{path:path}")
     def spa(path: str):
-        return FileResponse(frontend / "index.html")
+        return spa_index_response(frontend)
