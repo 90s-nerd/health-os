@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/90s-nerd/health-os/compare/v1.2.0...v1.2.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* prevent stale frontend after updates ([f96ffe6](https://github.com/90s-nerd/health-os/commit/f96ffe6c1a6901a3f902cb3ffc2d27d76ee5e997))
+
 ## [1.2.0](https://github.com/90s-nerd/health-os/compare/v1.1.1...v1.2.0) (2026-07-14)
 
 
